@@ -1,0 +1,298 @@
+package ai
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+	"trade-go/config"
+	"trade-go/models"
+)
+
+type Client struct {
+	apiKey      string
+	aiBaseURL   string
+	aiModel     string
+	strategyURL string
+	httpClient *http.Client
+}
+
+func NewClient() *Client {
+	model := strings.TrimSpace(config.Config.AIModel)
+	if model == "" {
+		model = "chat-model"
+	}
+	return &Client{
+		apiKey:      config.Config.AIAPIKey,
+		aiBaseURL:   strings.TrimSpace(config.Config.AIBaseURL),
+		aiModel:     model,
+		strategyURL: strings.TrimSpace(config.Config.PyStrategyURL),
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+type chatRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature"`
+	Stream      bool          `json:"stream"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
+	if c.strategyURL != "" {
+		sig, err := c.analyzeByPython(priceData, currentPos, lastSignals)
+		if err == nil {
+			return sig, nil
+		}
+		fmt.Printf("Python策略服务调用失败，尝试通用AI兜底: %v\n", err)
+		if c.apiKey == "" || c.aiBaseURL == "" {
+			return fallbackSignal(priceData), nil
+		}
+	}
+	if c.apiKey == "" || c.aiBaseURL == "" {
+		return fallbackSignal(priceData), nil
+	}
+
+	prompt := buildPrompt(priceData, currentPos, lastSignals)
+
+	cfg := config.Config.Trade
+	sysMsg := fmt.Sprintf("您是一位专业的交易员，专注于%s周期趋势分析。请结合K线形态和技术指标做出判断，并严格遵循JSON格式要求。", cfg.Timeframe)
+
+	reqBody := chatRequest{
+		Model: c.aiModel,
+		Messages: []chatMessage{
+			{Role: "system", Content: sysMsg},
+			{Role: "user", Content: prompt},
+		},
+		Temperature: 0.1,
+		Stream:      false,
+	}
+
+	b, _ := json.Marshal(reqBody)
+	req, err := http.NewRequest("POST", c.aiBaseURL, bytes.NewReader(b))
+	if err != nil {
+		return models.TradeSignal{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return models.TradeSignal{}, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var chatResp chatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return models.TradeSignal{}, fmt.Errorf("解析响应失败: %w", err)
+	}
+	if len(chatResp.Choices) == 0 {
+		return models.TradeSignal{}, fmt.Errorf("AI 返回空响应")
+	}
+
+	content := chatResp.Choices[0].Message.Content
+	fmt.Printf("AI 原始回复: %s\n", content)
+
+	signal, err := parseSignal(content)
+	if err != nil {
+		return fallbackSignal(priceData), nil
+	}
+	signal.Timestamp = time.Now()
+	return signal, nil
+}
+
+func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
+	url := strings.TrimRight(c.strategyURL, "/") + "/analyze"
+	reqBody := map[string]interface{}{
+		"price_data":    priceData,
+		"current_pos":   currentPos,
+		"last_signals":  lastSignals,
+		"timeframe":     config.Config.Trade.Timeframe,
+		"symbol":        config.Config.Trade.Symbol,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return models.TradeSignal{}, err
+	}
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return models.TradeSignal{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return models.TradeSignal{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return models.TradeSignal{}, fmt.Errorf("python strategy http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var sig models.TradeSignal
+	if err := json.Unmarshal(raw, &sig); err != nil {
+		return models.TradeSignal{}, fmt.Errorf("解析python策略响应失败: %w", err)
+	}
+	if sig.Signal == "" || sig.StopLoss == 0 || sig.TakeProfit == 0 {
+		return models.TradeSignal{}, fmt.Errorf("python策略响应字段不完整")
+	}
+	sig.Timestamp = time.Now()
+	return sig, nil
+}
+
+func parseSignal(content string) (models.TradeSignal, error) {
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}") + 1
+	if start == -1 || end <= start {
+		return models.TradeSignal{}, fmt.Errorf("未找到 JSON")
+	}
+	jsonStr := content[start:end]
+
+	var sig models.TradeSignal
+	if err := json.Unmarshal([]byte(jsonStr), &sig); err != nil {
+		return models.TradeSignal{}, err
+	}
+	if sig.Signal == "" || sig.StopLoss == 0 || sig.TakeProfit == 0 {
+		return models.TradeSignal{}, fmt.Errorf("信号字段不完整")
+	}
+	return sig, nil
+}
+
+func fallbackSignal(pd models.PriceData) models.TradeSignal {
+	return models.TradeSignal{
+		Signal:     "HOLD",
+		Reason:     "因技术分析暂时不可用，采取保守策略",
+		StopLoss:   pd.Price * 0.98,
+		TakeProfit: pd.Price * 1.02,
+		Confidence: "LOW",
+		IsFallback: true,
+		Timestamp:  time.Now(),
+	}
+}
+
+func rsiStatus(rsi float64) string {
+	if rsi > 70 {
+		return "超买"
+	} else if rsi < 30 {
+		return "超卖"
+	}
+	return "中性"
+}
+
+func bbPosStr(pos float64) string {
+	if pos > 0.7 {
+		return "上部"
+	} else if pos < 0.3 {
+		return "下部"
+	}
+	return "中部"
+}
+
+func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models.TradeSignal) string {
+	cfg := config.Config.Trade
+	t := pd.Technical
+	tr := pd.Trend
+	lv := pd.Levels
+
+	var klines strings.Builder
+	klines.WriteString(fmt.Sprintf("【最近5根%s K线数据】\n", cfg.Timeframe))
+	last5 := pd.KlineData
+	if len(last5) > 5 {
+		last5 = last5[len(last5)-5:]
+	}
+	for i, k := range last5 {
+		name := "阴线"
+		if k.Close > k.Open {
+			name = "阳线"
+		}
+		change := (k.Close - k.Open) / k.Open * 100
+		klines.WriteString(fmt.Sprintf("K线%d: %s 开盘:%.2f 收盘:%.2f 涨跌:%+.2f%%\n", i+1, name, k.Open, k.Close, change))
+	}
+
+	var lastSigText string
+	if len(lastSignals) > 0 {
+		ls := lastSignals[len(lastSignals)-1]
+		lastSigText = fmt.Sprintf("\n【上次交易信号】\n信号: %s\n信心: %s", ls.Signal, ls.Confidence)
+	}
+
+	posText := "无持仓"
+	posLoss := "0"
+	if pos != nil {
+		posText = fmt.Sprintf("%s仓, 数量: %.4f, 盈亏: %.2f USDT", pos.Side, pos.Size, pos.UnrealizedPnL)
+		posLoss = fmt.Sprintf("%.2f", pos.UnrealizedPnL)
+	}
+
+	sma5Pct, sma20Pct, sma50Pct := 0.0, 0.0, 0.0
+	if t.SMA5 != 0 {
+		sma5Pct = (pd.Price - t.SMA5) / t.SMA5 * 100
+	}
+	if t.SMA20 != 0 {
+		sma20Pct = (pd.Price - t.SMA20) / t.SMA20 * 100
+	}
+	if t.SMA50 != 0 {
+		sma50Pct = (pd.Price - t.SMA50) / t.SMA50 * 100
+	}
+
+	return fmt.Sprintf(`你是一个专业的加密货币交易分析师，请基于以下BTC/USDT %s周期数据进行分析：
+
+%s
+
+【技术指标分析】
+移动平均线:
+- 5周期: %.2f | 价格相对: %+.2f%%
+- 20周期: %.2f | 价格相对: %+.2f%%
+- 50周期: %.2f | 价格相对: %+.2f%%
+
+趋势分析:
+- 短期趋势: %s | 中期趋势: %s | 整体趋势: %s | MACD方向: %s
+
+动量指标:
+- RSI: %.2f (%s) | MACD: %.4f | 信号线: %.4f
+- 布林带位置: %.2f%% (%s)
+
+关键水平:
+- 静态阻力: %.2f | 静态支撑: %.2f
+
+%s
+
+【当前行情】
+- 价格: $%.2f | 时间: %s
+- 最高: $%.2f | 最低: $%.2f | 成交量: %.2f BTC | 变化: %+.2f%%
+- 持仓: %s | 盈亏: %s USDT
+
+【交易原则】
+1. 强势上涨趋势 → BUY；强势下跌趋势 → SELL；震荡无方向 → HOLD
+2. 做多权重略大；非高信心不轻易反转方向
+3. 需2-3个指标同时确认才改变信号
+
+请严格按JSON格式回复：
+{"signal":"BUY|SELL|HOLD","reason":"简要理由","stop_loss":价格,"take_profit":价格,"confidence":"HIGH|MEDIUM|LOW"}`,
+		cfg.Timeframe, klines.String(),
+		t.SMA5, sma5Pct, t.SMA20, sma20Pct, t.SMA50, sma50Pct,
+		tr.ShortTerm, tr.MediumTerm, tr.Overall, tr.MACD,
+		t.RSI, rsiStatus(t.RSI), t.MACD, t.MACDSignal,
+		t.BBPosition*100, bbPosStr(t.BBPosition),
+		lv.StaticResistance, lv.StaticSupport,
+		lastSigText,
+		pd.Price, pd.Timestamp.Format("2006-01-02 15:04:05"),
+		pd.High, pd.Low, pd.Volume, pd.PriceChange,
+		posText, posLoss,
+	)
+}

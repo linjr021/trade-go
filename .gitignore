@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# env
+.env
+.env.local
+
+# editor
+*.swp
+*.swo
+
+# logs
+*.log
+
+# python
+__pycache__/
+*.pyc
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# go
+bin/
+*.test
+*.out
+
+# runtime data
+data/
+*.db
+
+# misc archives
+*.zip
