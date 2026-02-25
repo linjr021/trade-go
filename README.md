@@ -1,6 +1,22 @@
 # trade-go
 
-基于 Binance USDT 永续的 AI 量化交易系统（Python 策略 + Go 后台 + Vue3 前端）
+基于 Binance USDT 永续的 AI 量化交易系统（Python 策略 + Go 后台 + React 19 前端）
+
+## 技术栈
+
+- 前端：
+  - React 19
+  - Vite 6
+  - Axios
+- 后端：
+  - Go 1.21
+  - gorilla/websocket（WebSocket 行情）
+  - joho/godotenv（环境变量加载）
+- 策略服务（Python）：
+  - Python 3（标准库 `http.server` + `urllib`，无额外框架依赖）
+- 交易与数据：
+  - Binance USDT 永续（REST + WebSocket）
+  - SQLite（`modernc.org/sqlite`）
 
 ## 功能说明
 
@@ -30,7 +46,7 @@ trade-go/
 ├── storage/sqlite.go    # SQLite 持久化
 ├── ai/provider.go       # 策略客户端（Python优先，通用AI兜底）
 ├── strategy_py/         # Python 策略服务
-├── frontend/            # Vue3 前端
+├── frontend/            # React 19 前端（Vite）
 └── .env.example         # 环境变量示例
 ```
 
@@ -69,7 +85,7 @@ MODE=web go run .
 HTTP_ADDR=:9090 MODE=web go run .
 ```
 
-### 5. 启动前端（Vue3）
+### 5. 启动前端（React 19 + Vite）
 
 ```bash
 cd frontend
