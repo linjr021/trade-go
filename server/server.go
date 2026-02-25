@@ -30,6 +30,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/account", s.handleAccount)
 	mux.HandleFunc("/api/signals", s.handleSignals)
+	mux.HandleFunc("/api/strategy-scores", s.handleStrategyScores)
+	mux.HandleFunc("/api/system-settings", s.handleSystemSettings)
+	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/run", s.handleRunNow)
 	mux.HandleFunc("/api/scheduler/start", s.handleStartScheduler)
@@ -106,25 +109,11 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	resp := map[string]any{
-		"trade_config": map[string]any{
-			"symbol":                 cfg.Symbol,
-			"amount":                 cfg.Amount,
-			"high_confidence_amount": cfg.HighConfidenceAmount,
-			"low_confidence_amount":  cfg.LowConfidenceAmount,
-			"leverage":               cfg.Leverage,
-			"timeframe":              cfg.Timeframe,
-			"test_mode":              cfg.TestMode,
-			"data_points":            cfg.DataPoints,
-			"max_risk_per_trade_pct": cfg.MaxRiskPerTradePct,
-			"max_position_pct":       cfg.MaxPositionPct,
-			"max_consecutive_losses": cfg.MaxConsecutiveLosses,
-			"max_daily_loss_pct":     cfg.MaxDailyLossPct,
-			"max_drawdown_pct":       cfg.MaxDrawdownPct,
-			"liquidation_buffer_pct": cfg.LiquidationBufferPct,
-		},
+		"trade_config":      tradeConfigMap(cfg),
 		"scheduler_running": s.schedulerRunning,
 		"next_run_at":       s.nextRunAt,
 		"runtime":           snap,
+		"strategy_scores":   s.bot.StrategyComboScores(20),
 	}
 	s.mu.RUnlock()
 	writeJSON(w, http.StatusOK, resp)
@@ -167,6 +156,22 @@ func (s *Service) handleSignals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"signals": signals})
 }
 
+func (s *Service) handleStrategyScores(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scores": s.bot.StrategyComboScores(limit),
+	})
+}
+
 func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -176,6 +181,9 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		HighConfidenceAmount *float64 `json:"high_confidence_amount"`
 		LowConfidenceAmount  *float64 `json:"low_confidence_amount"`
+		PositionSizingMode   *string  `json:"position_sizing_mode"`
+		HighConfidenceMarginPct *float64 `json:"high_confidence_margin_pct"`
+		LowConfidenceMarginPct  *float64 `json:"low_confidence_margin_pct"`
 		Leverage             *int     `json:"leverage"`
 		MaxRiskPerTradePct   *float64 `json:"max_risk_per_trade_pct"`
 		MaxPositionPct       *float64 `json:"max_position_pct"`
@@ -192,6 +200,9 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.bot.UpdateTradeSettings(trader.TradeSettingsUpdate{
 		HighConfidenceAmount: req.HighConfidenceAmount,
 		LowConfidenceAmount:  req.LowConfidenceAmount,
+		PositionSizingMode:   req.PositionSizingMode,
+		HighConfidenceMarginPct: req.HighConfidenceMarginPct,
+		LowConfidenceMarginPct:  req.LowConfidenceMarginPct,
 		Leverage:             req.Leverage,
 		MaxRiskPerTradePct:   req.MaxRiskPerTradePct,
 		MaxPositionPct:       req.MaxPositionPct,
@@ -207,22 +218,7 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "settings updated",
-		"trade_config": map[string]any{
-			"symbol":                 cfg.Symbol,
-			"amount":                 cfg.Amount,
-			"high_confidence_amount": cfg.HighConfidenceAmount,
-			"low_confidence_amount":  cfg.LowConfidenceAmount,
-			"leverage":               cfg.Leverage,
-			"timeframe":              cfg.Timeframe,
-			"test_mode":              cfg.TestMode,
-			"data_points":            cfg.DataPoints,
-			"max_risk_per_trade_pct": cfg.MaxRiskPerTradePct,
-			"max_position_pct":       cfg.MaxPositionPct,
-			"max_consecutive_losses": cfg.MaxConsecutiveLosses,
-			"max_daily_loss_pct":     cfg.MaxDailyLossPct,
-			"max_drawdown_pct":       cfg.MaxDrawdownPct,
-			"liquidation_buffer_pct": cfg.LiquidationBufferPct,
-		},
+		"trade_config": tradeConfigMap(cfg),
 	})
 }
 

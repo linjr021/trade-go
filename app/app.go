@@ -36,7 +36,15 @@ func (r *Runner) Setup() error {
 	} else {
 		fmt.Printf("SQLite初始化失败，继续无持久化模式: %v\n", err)
 	}
-	return r.bot.Setup()
+	if err := r.bot.Setup(); err != nil {
+		mode := normalizeMode(os.Getenv("MODE"))
+		if mode == ModeWeb {
+			fmt.Printf("交易所初始化失败，进入API配置模式: %v\n", err)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) Run(mode string) error {

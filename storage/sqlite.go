@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -20,6 +22,17 @@ type RiskSnapshot struct {
 	PeakEquity        float64
 	CurrentEquity     float64
 	ConsecutiveLosses int
+}
+
+type StrategyComboScore struct {
+	Combo        string  `json:"combo"`
+	Score        float64 `json:"score"`
+	TotalPnL     float64 `json:"total_pnl"`
+	BaseEquity   float64 `json:"base_equity"`
+	Observations int     `json:"observations"`
+	Wins         int     `json:"wins"`
+	Losses       int     `json:"losses"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 func Open(path string) (*Store, error) {
@@ -62,7 +75,9 @@ func (s *Store) migrate() error {
 			suggested_size REAL,
 			approved_size REAL,
 			approved INTEGER,
-			risk_reason TEXT
+			risk_reason TEXT,
+			strategy_combo TEXT,
+			strategy_score REAL
 		);`,
 		`CREATE TABLE IF NOT EXISTS orders (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,9 +124,40 @@ func (s *Store) migrate() error {
 			event_type TEXT,
 			details TEXT
 		);`,
+		`CREATE TABLE IF NOT EXISTS strategy_combo_stats (
+			combo TEXT PRIMARY KEY,
+			base_equity REAL NOT NULL,
+			last_equity REAL NOT NULL,
+			total_pnl REAL NOT NULL,
+			observations INTEGER NOT NULL,
+			wins INTEGER NOT NULL,
+			losses INTEGER NOT NULL,
+			score REAL NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 	for _, stmt := range schema {
 		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	if err := s.migrateCompat(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) migrateCompat() error {
+	alterStmts := []string{
+		`ALTER TABLE ai_decisions ADD COLUMN strategy_combo TEXT;`,
+		`ALTER TABLE ai_decisions ADD COLUMN strategy_score REAL;`,
+	}
+	for _, stmt := range alterStmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists") {
+				continue
+			}
 			return err
 		}
 	}
@@ -123,13 +169,13 @@ func (s *Store) SaveAIDecision(ts time.Time, decision map[string]any) error {
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO ai_decisions (ts, signal, confidence, reason, price, stop_loss, take_profit, suggested_size, approved_size, approved, risk_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO ai_decisions (ts, signal, confidence, reason, price, stop_loss, take_profit, suggested_size, approved_size, approved, risk_reason, strategy_combo, strategy_score)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ts.Format(time.RFC3339),
 		decision["signal"], decision["confidence"], decision["reason"],
 		decision["price"], decision["stop_loss"], decision["take_profit"],
 		decision["suggested_size"], decision["approved_size"], boolToInt(decision["approved"] == true),
-		decision["risk_reason"],
+		decision["risk_reason"], decision["strategy_combo"], decision["strategy_score"],
 	)
 	return err
 }
@@ -270,6 +316,124 @@ func (s *Store) OpenOrders() ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func (s *Store) UpdateStrategyComboScore(combo string, equity float64) (float64, error) {
+	if s == nil || strings.TrimSpace(combo) == "" || equity <= 0 {
+		return 0, nil
+	}
+	combo = strings.TrimSpace(combo)
+	now := time.Now().Format(time.RFC3339)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		base         float64
+		last         float64
+		total        float64
+		observations int
+		wins         int
+		losses       int
+	)
+	err = tx.QueryRow(
+		`SELECT base_equity, last_equity, total_pnl, observations, wins, losses
+		 FROM strategy_combo_stats WHERE combo = ?`,
+		combo,
+	).Scan(&base, &last, &total, &observations, &wins, &losses)
+	if err == sql.ErrNoRows {
+		score := 5.0
+		_, execErr := tx.Exec(
+			`INSERT INTO strategy_combo_stats (combo, base_equity, last_equity, total_pnl, observations, wins, losses, score, updated_at)
+			 VALUES (?, ?, ?, 0, 1, 0, 0, ?, ?)`,
+			combo, equity, equity, score, now,
+		)
+		if execErr != nil {
+			return 0, execErr
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return score, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	delta := equity - last
+	total += delta
+	observations++
+	if delta > 0 {
+		wins++
+	} else if delta < 0 {
+		losses++
+	}
+	score := pnlScore(total, base)
+
+	_, err = tx.Exec(
+		`UPDATE strategy_combo_stats
+		 SET last_equity=?, total_pnl=?, observations=?, wins=?, losses=?, score=?, updated_at=?
+		 WHERE combo=?`,
+		equity, total, observations, wins, losses, score, now, combo,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return score, nil
+}
+
+func (s *Store) GetStrategyComboScores(limit int) ([]StrategyComboScore, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT combo, score, total_pnl, base_equity, observations, wins, losses, updated_at
+		 FROM strategy_combo_stats
+		 ORDER BY score DESC, total_pnl DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StrategyComboScore
+	for rows.Next() {
+		var item StrategyComboScore
+		if err := rows.Scan(
+			&item.Combo, &item.Score, &item.TotalPnL, &item.BaseEquity,
+			&item.Observations, &item.Wins, &item.Losses, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func pnlScore(totalPnL, baseEquity float64) float64 {
+	if baseEquity <= 0 {
+		baseEquity = 1
+	}
+	roi := totalPnL / baseEquity
+	score := 10.0 / (1.0 + math.Exp(-12.0*roi))
+	if score < 0 {
+		score = 0
+	}
+	if score > 10 {
+		score = 10
+	}
+	return math.Round(score*100) / 100
 }
 
 func boolToInt(v bool) int {

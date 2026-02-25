@@ -84,6 +84,7 @@ npm run dev
 - `GET /api/status`：机器人状态、交易配置、最近执行信息
 - `GET /api/account`：余额与持仓
 - `GET /api/signals?limit=30`：最近信号历史
+- `POST /api/llm/chat`：与 AI 对话并按白名单自动调整交易参数
 - `POST /api/settings`：更新仓位参数、杠杆、风控阈值
 - `POST /api/run`：立即执行一次策略
 - `POST /api/scheduler/start`：启动定时调度（非实时模式）
@@ -101,6 +102,9 @@ npm run dev
 - `Symbol`: `BTCUSDT`
 - `HighConfidenceAmount`: `0.01`
 - `LowConfidenceAmount`: `0.005`
+- `PositionSizingMode`: `contracts`（可选 `contracts` / `margin_pct`）
+- `HighConfidenceMarginPct`: `0.10`
+- `LowConfidenceMarginPct`: `0.05`
 - `Leverage`: `10`
 - `Timeframe`: `15m`
 - `DataPoints`: `96`
@@ -115,6 +119,9 @@ npm run dev
 
 - `BINANCE_API_KEY`：Binance API Key
 - `BINANCE_SECRET`：Binance API Secret
+- `POSITION_SIZING_MODE`：开仓模式（`contracts`=按张数，`margin_pct`=按保证金百分比）
+- `HIGH_CONFIDENCE_MARGIN_PCT`：高信心保证金占比（`0-1`）
+- `LOW_CONFIDENCE_MARGIN_PCT`：低信心保证金占比（`0-1`）
 - `PY_STRATEGY_URL`：Python 策略服务地址（如 `http://127.0.0.1:9000`）
 - `AI_API_KEY`：通用 AI 接口 Key（Python 服务不可用时兜底可用）
 - `AI_BASE_URL`：通用 AI 接口请求地址（如 `https://xxx/v1/chat/completions`）

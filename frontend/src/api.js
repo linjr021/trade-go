@@ -8,6 +8,10 @@ const http = axios.create({
 export const getStatus = () => http.get('/status')
 export const getAccount = () => http.get('/account')
 export const getSignals = (limit = 20) => http.get('/signals', { params: { limit } })
+export const getStrategyScores = (limit = 20) =>
+  http.get('/strategy-scores', { params: { limit } })
+export const getSystemSettings = () => http.get('/system-settings')
+export const saveSystemSettings = (settings) => http.post('/system-settings', { settings })
 
 export const updateSettings = (payload) => http.post('/settings', payload)
 export const runNow = () => http.post('/run')

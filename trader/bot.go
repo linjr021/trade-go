@@ -26,6 +26,9 @@ type RuntimeSnapshot struct {
 type TradeSettingsUpdate struct {
 	HighConfidenceAmount *float64
 	LowConfidenceAmount  *float64
+	PositionSizingMode   *string
+	HighConfidenceMarginPct *float64
+	LowConfidenceMarginPct  *float64
 	Leverage             *int
 	MaxRiskPerTradePct   *float64
 	MaxPositionPct       *float64
@@ -61,6 +64,13 @@ func (b *Bot) SetStore(s *storage.Store) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.store = s
+}
+
+func (b *Bot) ReloadClients() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.exchange = exchange.NewClient()
+	b.aiClient = ai.NewClient()
 }
 
 // Setup 初始化交易所设置
@@ -129,12 +139,21 @@ func (b *Bot) Run() {
 	// 4. 执行交易
 	b.executeTrade(signal, priceData, currentPos, tradeAmount)
 	newPos, _ := b.exchange.FetchPosition(cfg.Symbol)
-	b.setRuntime(time.Now(), "", &signal, &priceData, newPos)
 	if newPos != nil {
 		_ = b.savePosition(*newPos)
 	}
 	newBalance, _ := b.exchange.FetchBalance()
+	equity := newBalance
+	if newPos != nil {
+		equity += newPos.UnrealizedPnL
+	}
+	if b.store != nil && signal.StrategyCombo != "" {
+		if score, err := b.store.UpdateStrategyComboScore(signal.StrategyCombo, equity); err == nil {
+			signal.StrategyScore = score
+		}
+	}
 	_ = b.saveEquity(newBalance, newPos)
+	b.setRuntime(time.Now(), "", &signal, &priceData, newPos)
 }
 
 func (b *Bot) fetchPriceData() (models.PriceData, error) {
@@ -186,13 +205,14 @@ func (b *Bot) analyzeWithRetry(pd models.PriceData, pos *models.Position) models
 		time.Sleep(time.Second)
 	}
 	fb := models.TradeSignal{
-		Signal:     "HOLD",
-		Reason:     "AI 分析失败，采取保守策略",
-		StopLoss:   pd.Price * 0.98,
-		TakeProfit: pd.Price * 1.02,
-		Confidence: "LOW",
-		IsFallback: true,
-		Timestamp:  time.Now(),
+		Signal:        "HOLD",
+		Reason:        "AI 分析失败，采取保守策略",
+		StopLoss:      pd.Price * 0.98,
+		TakeProfit:    pd.Price * 1.02,
+		Confidence:    "LOW",
+		StrategyCombo: "fallback_conservative",
+		IsFallback:    true,
+		Timestamp:     time.Now(),
 	}
 	return fb
 }
@@ -371,6 +391,17 @@ func (b *Bot) TradeConfig() config.TradeConfig {
 	return *b.cfg
 }
 
+func (b *Bot) StrategyComboScores(limit int) []storage.StrategyComboScore {
+	if b.store == nil {
+		return nil
+	}
+	scores, err := b.store.GetStrategyComboScores(limit)
+	if err != nil {
+		return nil
+	}
+	return scores
+}
+
 func (b *Bot) openLong(currentPos *models.Position, amount float64) ([]models.OrderResult, error) {
 	cfg := b.TradeConfig()
 	var orders []models.OrderResult
@@ -435,9 +466,28 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 		}
 		next.LowConfidenceAmount = *update.LowConfidenceAmount
 	}
+	if update.PositionSizingMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*update.PositionSizingMode))
+		if mode != "contracts" && mode != "margin_pct" {
+			return current, fmt.Errorf("position_sizing_mode 仅支持 contracts 或 margin_pct")
+		}
+		next.PositionSizingMode = mode
+	}
+	if update.HighConfidenceMarginPct != nil {
+		if *update.HighConfidenceMarginPct <= 0 || *update.HighConfidenceMarginPct > 1 {
+			return current, fmt.Errorf("high_confidence_margin_pct 需在 (0,1] 之间")
+		}
+		next.HighConfidenceMarginPct = *update.HighConfidenceMarginPct
+	}
+	if update.LowConfidenceMarginPct != nil {
+		if *update.LowConfidenceMarginPct <= 0 || *update.LowConfidenceMarginPct > 1 {
+			return current, fmt.Errorf("low_confidence_margin_pct 需在 (0,1] 之间")
+		}
+		next.LowConfidenceMarginPct = *update.LowConfidenceMarginPct
+	}
 	if update.Leverage != nil {
-		if *update.Leverage <= 0 {
-			return current, fmt.Errorf("leverage 必须大于 0")
+		if *update.Leverage <= 0 || *update.Leverage > 150 {
+			return current, fmt.Errorf("leverage 需在 1-150 之间")
 		}
 		next.Leverage = *update.Leverage
 	}
@@ -487,6 +537,9 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 	b.mu.Lock()
 	b.cfg.HighConfidenceAmount = next.HighConfidenceAmount
 	b.cfg.LowConfidenceAmount = next.LowConfidenceAmount
+	b.cfg.PositionSizingMode = next.PositionSizingMode
+	b.cfg.HighConfidenceMarginPct = next.HighConfidenceMarginPct
+	b.cfg.LowConfidenceMarginPct = next.LowConfidenceMarginPct
 	b.cfg.Leverage = next.Leverage
 	b.cfg.MaxRiskPerTradePct = next.MaxRiskPerTradePct
 	b.cfg.MaxPositionPct = next.MaxPositionPct
@@ -498,7 +551,30 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 	return b.TradeConfig(), nil
 }
 
-func amountByConfidence(confidence string, cfg config.TradeConfig) float64 {
+func suggestedAmountByConfidence(confidence string, cfg config.TradeConfig, balance, price float64) float64 {
+	mode := strings.ToLower(strings.TrimSpace(cfg.PositionSizingMode))
+	if mode == "" {
+		mode = "contracts"
+	}
+	isHigh := strings.ToUpper(strings.TrimSpace(confidence)) == "HIGH"
+	if mode == "margin_pct" {
+		pct := cfg.LowConfidenceMarginPct
+		if isHigh {
+			pct = cfg.HighConfidenceMarginPct
+		}
+		if pct <= 0 {
+			return 0
+		}
+		if pct > 1 {
+			pct = 1
+		}
+		if balance <= 0 || price <= 0 || cfg.Leverage <= 0 {
+			return 0
+		}
+		margin := balance * pct
+		return margin * float64(cfg.Leverage) / price
+	}
+
 	high := cfg.HighConfidenceAmount
 	low := cfg.LowConfidenceAmount
 	if high <= 0 {
@@ -507,21 +583,19 @@ func amountByConfidence(confidence string, cfg config.TradeConfig) float64 {
 	if low <= 0 {
 		low = cfg.Amount
 	}
-	switch strings.ToUpper(strings.TrimSpace(confidence)) {
-	case "HIGH":
+	if isHigh {
 		return high
-	default:
-		return low
 	}
+	return low
 }
 
 func (b *Bot) buildRiskPosition(signal models.TradeSignal, pd models.PriceData, pos *models.Position) (float64, bool, string) {
 	cfg := b.TradeConfig()
-	suggested := amountByConfidence(signal.Confidence, cfg)
 	balance, err := b.exchange.FetchBalance()
 	if err != nil {
 		return 0, false, fmt.Sprintf("读取余额失败: %v", err)
 	}
+	suggested := suggestedAmountByConfidence(signal.Confidence, cfg, balance, pd.Price)
 	snapshot := risk.Snapshot{
 		Balance:       balance,
 		CurrentEquity: balance,
@@ -609,7 +683,8 @@ func (b *Bot) saveAIDecision(sig models.TradeSignal, pd models.PriceData, approv
 		return
 	}
 	cfg := b.TradeConfig()
-	suggested := amountByConfidence(sig.Confidence, cfg)
+	balance, _ := b.exchange.FetchBalance()
+	suggested := suggestedAmountByConfidence(sig.Confidence, cfg, balance, pd.Price)
 	_ = b.store.SaveAIDecision(time.Now(), map[string]any{
 		"signal":         sig.Signal,
 		"confidence":     sig.Confidence,
@@ -617,6 +692,8 @@ func (b *Bot) saveAIDecision(sig models.TradeSignal, pd models.PriceData, approv
 		"price":          pd.Price,
 		"stop_loss":      sig.StopLoss,
 		"take_profit":    sig.TakeProfit,
+		"strategy_combo": sig.StrategyCombo,
+		"strategy_score": sig.StrategyScore,
 		"suggested_size": suggested,
 		"approved_size":  approvedSize,
 		"approved":       approved,

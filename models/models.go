@@ -69,13 +69,15 @@ type PriceData struct {
 
 // TradeSignal AI 返回的交易信号
 type TradeSignal struct {
-	Signal     string  `json:"signal"`      // BUY/SELL/HOLD
-	Reason     string  `json:"reason"`
-	StopLoss   float64 `json:"stop_loss"`
-	TakeProfit float64 `json:"take_profit"`
-	Confidence string  `json:"confidence"`  // HIGH/MEDIUM/LOW
-	Timestamp  time.Time
-	IsFallback bool
+	Signal        string  `json:"signal"`         // BUY/SELL/HOLD
+	Reason        string  `json:"reason"`
+	StopLoss      float64 `json:"stop_loss"`
+	TakeProfit    float64 `json:"take_profit"`
+	Confidence    string  `json:"confidence"`     // HIGH/MEDIUM/LOW
+	StrategyCombo string  `json:"strategy_combo"` // 策略组合标识
+	StrategyScore float64 `json:"strategy_score"` // 0-10
+	Timestamp     time.Time
+	IsFallback    bool
 }
 
 // Position 持仓信息

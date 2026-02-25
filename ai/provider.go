@@ -114,6 +114,7 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 	if err != nil {
 		return fallbackSignal(priceData), nil
 	}
+	ensureStrategyMeta(&signal)
 	signal.Timestamp = time.Now()
 	return signal, nil
 }
@@ -153,6 +154,7 @@ func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.
 	if sig.Signal == "" || sig.StopLoss == 0 || sig.TakeProfit == 0 {
 		return models.TradeSignal{}, fmt.Errorf("python策略响应字段不完整")
 	}
+	ensureStrategyMeta(&sig)
 	sig.Timestamp = time.Now()
 	return sig, nil
 }
@@ -177,13 +179,36 @@ func parseSignal(content string) (models.TradeSignal, error) {
 
 func fallbackSignal(pd models.PriceData) models.TradeSignal {
 	return models.TradeSignal{
-		Signal:     "HOLD",
-		Reason:     "因技术分析暂时不可用，采取保守策略",
-		StopLoss:   pd.Price * 0.98,
-		TakeProfit: pd.Price * 1.02,
-		Confidence: "LOW",
-		IsFallback: true,
-		Timestamp:  time.Now(),
+		Signal:        "HOLD",
+		Reason:        "因技术分析暂时不可用，采取保守策略",
+		StopLoss:      pd.Price * 0.98,
+		TakeProfit:    pd.Price * 1.02,
+		Confidence:    "LOW",
+		StrategyCombo: "fallback_conservative",
+		IsFallback:    true,
+		Timestamp:     time.Now(),
+	}
+}
+
+func ensureStrategyMeta(sig *models.TradeSignal) {
+	if sig == nil {
+		return
+	}
+	if strings.TrimSpace(sig.StrategyCombo) == "" {
+		switch strings.ToUpper(strings.TrimSpace(sig.Signal)) {
+		case "BUY":
+			sig.StrategyCombo = "ai_buy_generic"
+		case "SELL":
+			sig.StrategyCombo = "ai_sell_generic"
+		default:
+			sig.StrategyCombo = "ai_hold_generic"
+		}
+	}
+	if sig.StrategyScore < 0 {
+		sig.StrategyScore = 0
+	}
+	if sig.StrategyScore > 10 {
+		sig.StrategyScore = 10
 	}
 }
 

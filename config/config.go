@@ -13,6 +13,9 @@ type TradeConfig struct {
 	Amount                float64
 	HighConfidenceAmount  float64
 	LowConfidenceAmount   float64
+	PositionSizingMode    string
+	HighConfidenceMarginPct float64
+	LowConfidenceMarginPct  float64
 	Leverage              int
 	Timeframe             string
 	TestMode              bool
@@ -61,23 +64,26 @@ func Load() {
 		OKXSecret:      getEnv("OKX_SECRET", ""),
 		OKXPassword:    getEnv("OKX_PASSWORD", ""),
 		Trade: TradeConfig{
-			Symbol:               "BTCUSDT",
-			Amount:               0.01,
-			HighConfidenceAmount: 0.01,
-			LowConfidenceAmount:  0.005,
-			Leverage:             10,
-			Timeframe:            "15m",
-			TestMode:             getEnvBool("TEST_MODE", false),
-			DataPoints:           96,
-			MaxRiskPerTradePct:   0.01,
-			MaxPositionPct:       0.20,
-			MaxConsecutiveLosses: 3,
-			MaxDailyLossPct:      0.05,
-			MaxDrawdownPct:       0.12,
-			LiquidationBufferPct: 0.02,
-			ShortTermPeriod:      20,
-			MediumTermPeriod:     50,
-			LongTermPeriod:       96,
+			Symbol:                  "BTCUSDT",
+			Amount:                  0.01,
+			HighConfidenceAmount:    0.01,
+			LowConfidenceAmount:     0.005,
+			PositionSizingMode:      getEnv("POSITION_SIZING_MODE", "contracts"),
+			HighConfidenceMarginPct: getEnvFloat("HIGH_CONFIDENCE_MARGIN_PCT", 0.10),
+			LowConfidenceMarginPct:  getEnvFloat("LOW_CONFIDENCE_MARGIN_PCT", 0.05),
+			Leverage:                10,
+			Timeframe:               "15m",
+			TestMode:                getEnvBool("TEST_MODE", false),
+			DataPoints:              96,
+			MaxRiskPerTradePct:      0.01,
+			MaxPositionPct:          0.20,
+			MaxConsecutiveLosses:    3,
+			MaxDailyLossPct:         0.05,
+			MaxDrawdownPct:          0.12,
+			LiquidationBufferPct:    0.02,
+			ShortTermPeriod:         20,
+			MediumTermPeriod:        50,
+			LongTermPeriod:          96,
 		},
 	}
 }
@@ -99,4 +105,16 @@ func getEnvBool(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return b
+}
+
+func getEnvFloat(key string, defaultVal float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return f
 }
