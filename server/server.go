@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -23,15 +24,33 @@ type Service struct {
 }
 
 func NewService(bot *trader.Bot) *Service {
+	loadPromptSettingsToEnv()
 	return &Service{bot: bot}
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/account", s.handleAccount)
+	mux.HandleFunc("/api/assets/overview", s.handleAssetOverview)
+	mux.HandleFunc("/api/assets/trend", s.handleAssetTrend)
+	mux.HandleFunc("/api/assets/pnl-calendar", s.handleAssetPnLCalendar)
+	mux.HandleFunc("/api/assets/distribution", s.handleAssetDistribution)
 	mux.HandleFunc("/api/signals", s.handleSignals)
+	mux.HandleFunc("/api/trade-records", s.handleTradeRecords)
 	mux.HandleFunc("/api/strategy-scores", s.handleStrategyScores)
+	mux.HandleFunc("/api/strategies", s.handleStrategies)
+	mux.HandleFunc("/api/strategies/template", s.handleStrategyTemplate)
+	mux.HandleFunc("/api/strategies/upload", s.handleStrategyUpload)
+	mux.HandleFunc("/api/strategy-preference/generate", s.handleGenerateStrategyPreference)
+	mux.HandleFunc("/api/backtest", s.handleBacktest)
+	mux.HandleFunc("/api/backtest-history", s.handleBacktestHistory)
+	mux.HandleFunc("/api/backtest-history/detail", s.handleBacktestHistoryDetail)
+	mux.HandleFunc("/api/backtest-history/delete", s.handleBacktestHistoryDelete)
 	mux.HandleFunc("/api/system-settings", s.handleSystemSettings)
+	mux.HandleFunc("/api/integrations", s.handleIntegrations)
+	mux.HandleFunc("/api/integrations/llm", s.handleAddLLMIntegration)
+	mux.HandleFunc("/api/integrations/exchange", s.handleAddExchangeIntegration)
+	mux.HandleFunc("/api/prompt-settings", s.handlePromptSettings)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/run", s.handleRunNow)
@@ -172,6 +191,127 @@ func (s *Service) handleStrategyScores(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Service) handleTradeRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	limit := 40
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records": s.bot.TradeRecords(limit),
+	})
+}
+
+func (s *Service) handleAssetOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	summary, ok := s.bot.EquitySummary()
+	if !ok {
+		balance, _ := s.bot.FetchBalance()
+		summary.TotalFunds = balance
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"overview": summary})
+}
+
+func (s *Service) handleAssetTrend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "30D"
+	}
+	days := 30
+	switch rng {
+	case "7D":
+		days = 7
+	case "30D":
+		days = 30
+	case "3M":
+		days = 90
+	case "6M":
+		days = 180
+	case "1Y":
+		days = 365
+	}
+	since := time.Now().AddDate(0, 0, -days)
+	points, ok := s.bot.EquityTrendSince(since)
+	if !ok {
+		points = nil
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range":  rng,
+		"points": points,
+	})
+}
+
+func (s *Service) handleAssetPnLCalendar(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	month := r.URL.Query().Get("month")
+	if month == "" {
+		month = time.Now().Format("2006-01")
+	}
+	items, ok := s.bot.DailyPnLByMonth(month)
+	if !ok {
+		items = nil
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"month": month,
+		"days":  items,
+	})
+}
+
+func (s *Service) handleAssetDistribution(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	cfg := s.bot.TradeConfig()
+	balance, _ := s.bot.FetchBalance()
+	pos, _ := s.bot.FetchPosition()
+	hold := 0.0
+	label := "持仓保证金"
+	if pos != nil && pos.EntryPrice > 0 {
+		lev := pos.Leverage
+		if lev <= 0 {
+			lev = float64(cfg.Leverage)
+		}
+		if lev <= 0 {
+			lev = 1
+		}
+		hold = math.Abs(pos.Size*pos.EntryPrice) / lev
+		if pos.Symbol != "" {
+			label = pos.Symbol + " 持仓保证金"
+		}
+	}
+	if hold < 0 {
+		hold = 0
+	}
+	cash := balance
+	if cash < 0 {
+		cash = 0
+	}
+	total := cash + hold
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": total,
+		"items": []map[string]any{
+			{"label": "可用资金", "value": cash, "color": "#2b6cd0"},
+			{"label": label, "value": hold, "color": "#0f996e"},
+		},
+	})
+}
+
 func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -179,18 +319,19 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		HighConfidenceAmount *float64 `json:"high_confidence_amount"`
-		LowConfidenceAmount  *float64 `json:"low_confidence_amount"`
-		PositionSizingMode   *string  `json:"position_sizing_mode"`
+		Symbol                  *string  `json:"symbol"`
+		HighConfidenceAmount    *float64 `json:"high_confidence_amount"`
+		LowConfidenceAmount     *float64 `json:"low_confidence_amount"`
+		PositionSizingMode      *string  `json:"position_sizing_mode"`
 		HighConfidenceMarginPct *float64 `json:"high_confidence_margin_pct"`
 		LowConfidenceMarginPct  *float64 `json:"low_confidence_margin_pct"`
-		Leverage             *int     `json:"leverage"`
-		MaxRiskPerTradePct   *float64 `json:"max_risk_per_trade_pct"`
-		MaxPositionPct       *float64 `json:"max_position_pct"`
-		MaxConsecutiveLosses *int     `json:"max_consecutive_losses"`
-		MaxDailyLossPct      *float64 `json:"max_daily_loss_pct"`
-		MaxDrawdownPct       *float64 `json:"max_drawdown_pct"`
-		LiquidationBufferPct *float64 `json:"liquidation_buffer_pct"`
+		Leverage                *int     `json:"leverage"`
+		MaxRiskPerTradePct      *float64 `json:"max_risk_per_trade_pct"`
+		MaxPositionPct          *float64 `json:"max_position_pct"`
+		MaxConsecutiveLosses    *int     `json:"max_consecutive_losses"`
+		MaxDailyLossPct         *float64 `json:"max_daily_loss_pct"`
+		MaxDrawdownPct          *float64 `json:"max_drawdown_pct"`
+		LiquidationBufferPct    *float64 `json:"liquidation_buffer_pct"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
@@ -198,18 +339,19 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := s.bot.UpdateTradeSettings(trader.TradeSettingsUpdate{
-		HighConfidenceAmount: req.HighConfidenceAmount,
-		LowConfidenceAmount:  req.LowConfidenceAmount,
-		PositionSizingMode:   req.PositionSizingMode,
+		Symbol:                  req.Symbol,
+		HighConfidenceAmount:    req.HighConfidenceAmount,
+		LowConfidenceAmount:     req.LowConfidenceAmount,
+		PositionSizingMode:      req.PositionSizingMode,
 		HighConfidenceMarginPct: req.HighConfidenceMarginPct,
 		LowConfidenceMarginPct:  req.LowConfidenceMarginPct,
-		Leverage:             req.Leverage,
-		MaxRiskPerTradePct:   req.MaxRiskPerTradePct,
-		MaxPositionPct:       req.MaxPositionPct,
-		MaxConsecutiveLosses: req.MaxConsecutiveLosses,
-		MaxDailyLossPct:      req.MaxDailyLossPct,
-		MaxDrawdownPct:       req.MaxDrawdownPct,
-		LiquidationBufferPct: req.LiquidationBufferPct,
+		Leverage:                req.Leverage,
+		MaxRiskPerTradePct:      req.MaxRiskPerTradePct,
+		MaxPositionPct:          req.MaxPositionPct,
+		MaxConsecutiveLosses:    req.MaxConsecutiveLosses,
+		MaxDailyLossPct:         req.MaxDailyLossPct,
+		MaxDrawdownPct:          req.MaxDrawdownPct,
+		LiquidationBufferPct:    req.LiquidationBufferPct,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -217,7 +359,7 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message": "settings updated",
+		"message":      "settings updated",
 		"trade_config": tradeConfigMap(cfg),
 	})
 }

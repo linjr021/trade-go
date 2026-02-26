@@ -24,18 +24,19 @@ type RuntimeSnapshot struct {
 }
 
 type TradeSettingsUpdate struct {
-	HighConfidenceAmount *float64
-	LowConfidenceAmount  *float64
-	PositionSizingMode   *string
+	Symbol                  *string
+	HighConfidenceAmount    *float64
+	LowConfidenceAmount     *float64
+	PositionSizingMode      *string
 	HighConfidenceMarginPct *float64
 	LowConfidenceMarginPct  *float64
-	Leverage             *int
-	MaxRiskPerTradePct   *float64
-	MaxPositionPct       *float64
-	MaxConsecutiveLosses *int
-	MaxDailyLossPct      *float64
-	MaxDrawdownPct       *float64
-	LiquidationBufferPct *float64
+	Leverage                *int
+	MaxRiskPerTradePct      *float64
+	MaxPositionPct          *float64
+	MaxConsecutiveLosses    *int
+	MaxDailyLossPct         *float64
+	MaxDrawdownPct          *float64
+	LiquidationBufferPct    *float64
 }
 
 // Bot 交易机器人
@@ -53,10 +54,10 @@ type Bot struct {
 func NewBot() *Bot {
 	cfg := &config.Config.Trade
 	return &Bot{
-		exchange: exchange.NewClient(),
-		aiClient: ai.NewClient(),
+		exchange:   exchange.NewClient(),
+		aiClient:   ai.NewClient(),
 		riskEngine: risk.NewEngine(cfg),
-		cfg:      cfg,
+		cfg:        cfg,
 	}
 }
 
@@ -402,6 +403,90 @@ func (b *Bot) StrategyComboScores(limit int) []storage.StrategyComboScore {
 	return scores
 }
 
+func (b *Bot) TradeRecords(limit int) []storage.TradeRecord {
+	if b.store == nil {
+		return nil
+	}
+	records, err := b.store.RecentTradeRecords(limit)
+	if err != nil {
+		return nil
+	}
+	return records
+}
+
+func (b *Bot) EquitySummary() (storage.EquitySummary, bool) {
+	if b.store == nil {
+		return storage.EquitySummary{}, false
+	}
+	out, err := b.store.EquitySummary()
+	if err != nil {
+		return storage.EquitySummary{}, false
+	}
+	return out, true
+}
+
+func (b *Bot) EquityTrendSince(since time.Time) ([]storage.EquityPoint, bool) {
+	if b.store == nil {
+		return nil, false
+	}
+	out, err := b.store.EquityTrendSince(since)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func (b *Bot) DailyPnLByMonth(month string) ([]storage.DailyPnL, bool) {
+	if b.store == nil {
+		return nil, false
+	}
+	out, err := b.store.DailyPnLByMonth(month)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func (b *Bot) SaveBacktestRun(run storage.BacktestRun, records []storage.BacktestRunRecord) (int64, bool) {
+	if b.store == nil {
+		return 0, false
+	}
+	id, err := b.store.SaveBacktestRun(run, records)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+func (b *Bot) BacktestRuns(limit int) []storage.BacktestRun {
+	if b.store == nil {
+		return nil
+	}
+	out, err := b.store.BacktestRuns(limit)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+func (b *Bot) BacktestRunDetail(id int64) (storage.BacktestRun, []storage.BacktestRunRecord, bool) {
+	if b.store == nil {
+		return storage.BacktestRun{}, nil, false
+	}
+	run, records, err := b.store.BacktestRunDetail(id)
+	if err != nil {
+		return storage.BacktestRun{}, nil, false
+	}
+	return run, records, true
+}
+
+func (b *Bot) DeleteBacktestRun(id int64) bool {
+	if b.store == nil {
+		return false
+	}
+	return b.store.DeleteBacktestRun(id) == nil
+}
+
 func (b *Bot) openLong(currentPos *models.Position, amount float64) ([]models.OrderResult, error) {
 	cfg := b.TradeConfig()
 	var orders []models.OrderResult
@@ -454,6 +539,13 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 	current := b.TradeConfig()
 	next := current
 
+	if update.Symbol != nil {
+		sym := strings.ToUpper(strings.TrimSpace(*update.Symbol))
+		if len(sym) < 6 || len(sym) > 16 {
+			return current, fmt.Errorf("symbol 格式无效")
+		}
+		next.Symbol = sym
+	}
 	if update.HighConfidenceAmount != nil {
 		if *update.HighConfidenceAmount <= 0 {
 			return current, fmt.Errorf("high_confidence_amount 必须大于 0")
@@ -528,13 +620,14 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 		next.LiquidationBufferPct = *update.LiquidationBufferPct
 	}
 
-	if update.Leverage != nil && next.Leverage != current.Leverage {
+	if (update.Leverage != nil && next.Leverage != current.Leverage) || (update.Symbol != nil && next.Symbol != current.Symbol) {
 		if err := b.exchange.SetLeverage(next.Symbol, next.Leverage); err != nil {
 			return current, fmt.Errorf("设置杠杆失败: %w", err)
 		}
 	}
 
 	b.mu.Lock()
+	b.cfg.Symbol = next.Symbol
 	b.cfg.HighConfidenceAmount = next.HighConfidenceAmount
 	b.cfg.LowConfidenceAmount = next.LowConfidenceAmount
 	b.cfg.PositionSizingMode = next.PositionSizingMode

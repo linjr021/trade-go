@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import importlib.util
+import inspect
 import json
 import os
 import urllib.error
@@ -129,7 +131,7 @@ def _call_llm_tuner(payload):
         return None
 
     prompt = {
-        "task": "Tune crypto strategy parameters for current market regime.",
+        "task": "Tune strategy parameters for current market regime with risk-aware bias.",
         "constraints": {
             "bias_shift": "[-8,8] points",
             "entry_threshold": "[8,16]",
@@ -138,6 +140,12 @@ def _call_llm_tuner(payload):
             "filter_mode": "strict|normal|loose",
             "confidence_delta": "-1|0|1",
         },
+        "rules": [
+            "Do not output trading direction, only parameter tuning.",
+            "If uncertainty is high, prefer stricter filters and higher entry threshold.",
+            "Keep risk-reward coherent: tp_mult should usually be >= sl_mult.",
+            "Output JSON object only.",
+        ],
         "market": payload.get("price_data", {}),
         "recent_signals": payload.get("last_signals", [])[-8:],
         "output_json_only": True,
@@ -154,7 +162,7 @@ def _call_llm_tuner(payload):
     req = {
         "model": settings["model"],
         "messages": [
-            {"role": "system", "content": "You are a quant strategy parameter tuner. Output JSON only."},
+            {"role": "system", "content": "You are a risk-aware quant parameter tuner. Return strict JSON only."},
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
         ],
         "temperature": 0.1,
@@ -210,21 +218,12 @@ def _shift_confidence(conf, delta):
     return order[idx]
 
 
-def build_signal(payload):
+def _extract_features(payload):
     pd = payload.get("price_data", {}) or {}
     technical = _pick(pd, "Technical", "technical", default={}) or {}
     trend = _pick(pd, "Trend", "trend", default={}) or {}
 
     price = _f(_pick(pd, "Price", "price"), 0.0)
-    if price <= 0:
-        return {
-            "signal": "HOLD",
-            "reason": "invalid price",
-            "stop_loss": 0,
-            "take_profit": 0,
-            "confidence": "LOW",
-        }
-
     price_change = _f(_pick(pd, "PriceChange", "price_change"), 0.0)
     rsi = _f(_pick(technical, "RSI", "rsi"), 50.0)
     macd = _f(_pick(technical, "MACD", "macd"), 0.0)
@@ -240,48 +239,81 @@ def build_signal(payload):
     atr_ratio = (atr / price) if price > 0 else 0.0
     range_pct = _calc_recent_range_pct(rows, lookback=8)
 
-    # 1) 趋势因子（权重40）
+    atr_fallback = price * 0.006
+    atr_use = atr if atr > 0 else atr_fallback
+
+    return {
+        "price": price,
+        "price_change": price_change,
+        "rsi": rsi,
+        "macd": macd,
+        "macd_sig": macd_sig,
+        "sma20": sma20,
+        "sma50": sma50,
+        "bb_pos": bb_pos,
+        "volume_ratio": volume_ratio,
+        "overall": overall,
+        "atr": atr,
+        "atr_use": atr_use,
+        "atr_ratio": atr_ratio,
+        "range_pct": range_pct,
+    }
+
+
+def _sl_tp(price, atr_use, signal, sl_mult=1.6, tp_mult=2.2):
+    if signal == "BUY":
+        return round(price - sl_mult * atr_use, 4), round(price + tp_mult * atr_use, 4)
+    if signal == "SELL":
+        return round(price + sl_mult * atr_use, 4), round(price - tp_mult * atr_use, 4)
+    return round(price - atr_use, 4), round(price + atr_use, 4)
+
+
+def strategy_ai_assisted(payload):
+    ft = _extract_features(payload)
+    price = ft["price"]
+    if price <= 0:
+        return {
+            "signal": "HOLD",
+            "reason": "invalid price",
+            "stop_loss": 0,
+            "take_profit": 0,
+            "confidence": "LOW",
+            "strategy_combo": "no_trade",
+        }
+
     trend_bias = 0.5
-    if ("上涨" in overall) or ("bull" in overall):
+    if ("上涨" in ft["overall"]) or ("bull" in ft["overall"]):
         trend_bias += 0.25
-    if ("下跌" in overall) or ("bear" in overall):
+    if ("下跌" in ft["overall"]) or ("bear" in ft["overall"]):
         trend_bias -= 0.25
-    if price > sma20 > 0:
+    if price > ft["sma20"] > 0:
         trend_bias += 0.10
-    elif price < sma20 and sma20 > 0:
+    elif price < ft["sma20"] and ft["sma20"] > 0:
         trend_bias -= 0.10
-    if price > sma50 > 0:
+    if price > ft["sma50"] > 0:
         trend_bias += 0.10
-    elif price < sma50 and sma50 > 0:
+    elif price < ft["sma50"] and ft["sma50"] > 0:
         trend_bias -= 0.10
     trend_bias = _clamp(trend_bias, 0.0, 1.0)
 
-    # 2) 动量因子（权重30）
     momentum_bias = 0.5
-    macd_diff = macd - macd_sig
+    macd_diff = ft["macd"] - ft["macd_sig"]
     momentum_bias += _clamp(macd_diff * 1000.0, -0.20, 0.20)
-    if rsi <= 30:
+    if ft["rsi"] <= 30:
         momentum_bias += 0.08
-    elif rsi >= 70:
+    elif ft["rsi"] >= 70:
         momentum_bias -= 0.08
-    momentum_bias += _clamp(price_change / 10.0, -0.12, 0.12)
+    momentum_bias += _clamp(ft["price_change"] / 10.0, -0.12, 0.12)
     momentum_bias = _clamp(momentum_bias, 0.0, 1.0)
 
-    # 3) 波动/位置因子（权重20）
     volpos_bias = 0.5
-    volpos_bias += _clamp((0.5 - bb_pos) * 0.5, -0.15, 0.15)
-    volpos_bias += _clamp((range_pct - 0.012) * 4.0, -0.12, 0.12)
+    volpos_bias += _clamp((0.5 - ft["bb_pos"]) * 0.5, -0.15, 0.15)
+    volpos_bias += _clamp((ft["range_pct"] - 0.012) * 4.0, -0.12, 0.12)
     volpos_bias = _clamp(volpos_bias, 0.0, 1.0)
 
-    # 4) 成交量因子（权重10）
-    volume_bias = _clamp(0.5 + (volume_ratio - 1.0) * 0.3, 0.0, 1.0)
+    volume_bias = _clamp(0.5 + (ft["volume_ratio"] - 1.0) * 0.3, 0.0, 1.0)
 
-    long_score = (
-        trend_bias * 40.0
-        + momentum_bias * 30.0
-        + volpos_bias * 20.0
-        + volume_bias * 10.0
-    )
+    long_score = trend_bias * 40.0 + momentum_bias * 30.0 + volpos_bias * 20.0 + volume_bias * 10.0
     short_score = 100.0 - long_score
     edge = long_score - short_score
 
@@ -298,7 +330,6 @@ def build_signal(payload):
     params = _apply_llm_tune(params, llm_tune)
     edge += params["bias_shift"]
 
-    # 交易过滤：低波动 + 优势不足 => HOLD
     min_atr = 0.002
     min_range = 0.004
     if params["filter_mode"] == "strict":
@@ -308,7 +339,7 @@ def build_signal(payload):
         min_atr = 0.0016
         min_range = 0.003
 
-    if atr_ratio < min_atr or range_pct < min_range:
+    if ft["atr_ratio"] < min_atr or ft["range_pct"] < min_range:
         signal = "HOLD"
     elif edge >= params["entry_threshold"]:
         signal = "BUY"
@@ -317,12 +348,7 @@ def build_signal(payload):
     else:
         signal = "HOLD"
 
-    confidence = _confidence_from_edge(edge)
-    confidence = _shift_confidence(confidence, params["confidence_delta"])
-
-    # ATR 自适应止盈止损
-    atr_fallback = price * 0.006
-    atr_use = atr if atr > 0 else atr_fallback
+    confidence = _shift_confidence(_confidence_from_edge(edge), params["confidence_delta"])
     sl_mult = params["sl_mult"]
     tp_mult = params["tp_mult"]
     if confidence == "HIGH":
@@ -332,20 +358,11 @@ def build_signal(payload):
         sl_mult = min(sl_mult, 1.4)
         tp_mult = min(tp_mult, 2.0)
 
-    if signal == "BUY":
-        stop_loss = price - sl_mult * atr_use
-        take_profit = price + tp_mult * atr_use
-    elif signal == "SELL":
-        stop_loss = price + sl_mult * atr_use
-        take_profit = price - tp_mult * atr_use
-    else:
-        stop_loss = price - 1.0 * atr_use
-        take_profit = price + 1.0 * atr_use
-
-    combo = _strategy_combo(signal, trend_bias, rsi, bb_pos, atr_ratio)
+    stop_loss, take_profit = _sl_tp(price, ft["atr_use"], signal, sl_mult, tp_mult)
+    combo = _strategy_combo(signal, trend_bias, ft["rsi"], ft["bb_pos"], ft["atr_ratio"])
     reason = (
         f"L{long_score:.1f}/S{short_score:.1f}, edge={edge:.1f}, "
-        f"trend={trend_bias:.2f}, mom={momentum_bias:.2f}, atr%={atr_ratio*100:.2f}"
+        f"trend={trend_bias:.2f}, mom={momentum_bias:.2f}, atr%={ft['atr_ratio']*100:.2f}"
     )
     if params["llm_reason"]:
         reason = f"{reason}; llm={params['llm_reason'][:80]}"
@@ -353,11 +370,335 @@ def build_signal(payload):
     return {
         "signal": signal,
         "reason": reason,
-        "stop_loss": round(stop_loss, 4),
-        "take_profit": round(take_profit, 4),
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
         "confidence": confidence,
         "strategy_combo": combo,
     }
+
+
+def strategy_trend_following(payload):
+    ft = _extract_features(payload)
+    price = ft["price"]
+    if price <= 0:
+        return {
+            "signal": "HOLD",
+            "reason": "invalid price",
+            "stop_loss": 0,
+            "take_profit": 0,
+            "confidence": "LOW",
+            "strategy_combo": "trend_following",
+        }
+
+    signal = "HOLD"
+    edge = 0.0
+    if price > ft["sma20"] > ft["sma50"] and ft["macd"] >= ft["macd_sig"]:
+        signal = "BUY"
+        edge = 14 + _clamp((ft["volume_ratio"] - 1.0) * 6.0, 0.0, 6.0)
+    elif price < ft["sma20"] < ft["sma50"] and ft["macd"] <= ft["macd_sig"]:
+        signal = "SELL"
+        edge = 14 + _clamp((ft["volume_ratio"] - 1.0) * 6.0, 0.0, 6.0)
+
+    stop_loss, take_profit = _sl_tp(price, ft["atr_use"], signal, 1.7, 2.5)
+    return {
+        "signal": signal,
+        "reason": f"trend_following: sma20/sma50 + macd, vol={ft['volume_ratio']:.2f}",
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "confidence": _confidence_from_edge(edge),
+        "strategy_combo": "trend_following",
+    }
+
+
+def strategy_mean_reversion(payload):
+    ft = _extract_features(payload)
+    price = ft["price"]
+    if price <= 0:
+        return {
+            "signal": "HOLD",
+            "reason": "invalid price",
+            "stop_loss": 0,
+            "take_profit": 0,
+            "confidence": "LOW",
+            "strategy_combo": "mean_reversion",
+        }
+
+    signal = "HOLD"
+    edge = 0.0
+    if ft["rsi"] <= 32 and ft["bb_pos"] <= 0.2:
+        signal = "BUY"
+        edge = 12 + (32 - ft["rsi"]) * 0.5
+    elif ft["rsi"] >= 68 and ft["bb_pos"] >= 0.8:
+        signal = "SELL"
+        edge = 12 + (ft["rsi"] - 68) * 0.5
+
+    stop_loss, take_profit = _sl_tp(price, ft["atr_use"], signal, 1.3, 1.9)
+    return {
+        "signal": signal,
+        "reason": f"mean_reversion: rsi={ft['rsi']:.1f}, bb={ft['bb_pos']:.2f}",
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "confidence": _confidence_from_edge(edge),
+        "strategy_combo": "mean_reversion",
+    }
+
+
+def strategy_breakout(payload):
+    ft = _extract_features(payload)
+    price = ft["price"]
+    if price <= 0:
+        return {
+            "signal": "HOLD",
+            "reason": "invalid price",
+            "stop_loss": 0,
+            "take_profit": 0,
+            "confidence": "LOW",
+            "strategy_combo": "breakout",
+        }
+
+    signal = "HOLD"
+    edge = 0.0
+    if ft["atr_ratio"] >= 0.004 and ft["range_pct"] >= 0.007 and ft["volume_ratio"] >= 1.2:
+        if ft["price_change"] > 0.35:
+            signal = "BUY"
+            edge = 15 + _clamp(ft["price_change"] * 3, 0.0, 8.0)
+        elif ft["price_change"] < -0.35:
+            signal = "SELL"
+            edge = 15 + _clamp(abs(ft["price_change"]) * 3, 0.0, 8.0)
+
+    stop_loss, take_profit = _sl_tp(price, ft["atr_use"], signal, 1.8, 3.0)
+    return {
+        "signal": signal,
+        "reason": f"breakout: atr%={ft['atr_ratio']*100:.2f}, range%={ft['range_pct']*100:.2f}, vol={ft['volume_ratio']:.2f}",
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "confidence": _confidence_from_edge(edge),
+        "strategy_combo": "breakout",
+    }
+
+
+def _normalize_signal(sig, fallback_price, combo):
+    if not isinstance(sig, dict):
+        sig = {}
+    signal = str(sig.get("signal", "HOLD")).upper().strip()
+    if signal not in ("BUY", "SELL", "HOLD"):
+        signal = "HOLD"
+    confidence = str(sig.get("confidence", "LOW")).upper().strip()
+    if confidence not in ("HIGH", "MEDIUM", "LOW"):
+        confidence = "LOW"
+
+    stop_loss = _f(sig.get("stop_loss"), 0.0)
+    take_profit = _f(sig.get("take_profit"), 0.0)
+    if fallback_price > 0 and (stop_loss <= 0 or take_profit <= 0):
+        atr = max(fallback_price * 0.005, 1e-8)
+        stop_loss, take_profit = _sl_tp(fallback_price, atr, signal)
+
+    return {
+        "signal": signal,
+        "reason": str(sig.get("reason", ""))[:240],
+        "stop_loss": round(stop_loss, 4),
+        "take_profit": round(take_profit, 4),
+        "confidence": confidence,
+        "strategy_combo": str(sig.get("strategy_combo", combo)),
+    }
+
+
+def _load_user_strategies():
+    reg = {}
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    user_dir = os.path.join(base_dir, "user_strategies")
+    os.makedirs(user_dir, exist_ok=True)
+
+    for name in sorted(os.listdir(user_dir)):
+        if not name.endswith(".py") or name.startswith("_"):
+            continue
+        file_path = os.path.join(user_dir, name)
+        module_name = f"user_strategy_{name[:-3]}"
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            fn = getattr(mod, "analyze", None)
+            if not callable(fn):
+                continue
+            sid = str(getattr(mod, "STRATEGY_ID", name[:-3])).strip().lower().replace(" ", "_")
+            if not sid:
+                sid = name[:-3]
+            reg[sid] = fn
+        except Exception as e:
+            print(f"skip user strategy {name}: {e}")
+    return reg
+
+
+def _builtin_registry():
+    return {
+        "ai_assisted": strategy_ai_assisted,
+        "trend_following": strategy_trend_following,
+        "mean_reversion": strategy_mean_reversion,
+        "breakout": strategy_breakout,
+    }
+
+
+def _registry():
+    reg = _builtin_registry()
+    reg.update(_load_user_strategies())
+    return reg
+
+
+def _default_enabled_ids(reg):
+    env_val = os.getenv("PY_STRATEGY_ENABLED", "").strip()
+    if env_val:
+        ids = [x.strip().lower() for x in env_val.split(",") if x.strip()]
+        return [x for x in ids if x in reg][:3]
+    defaults = ["ai_assisted", "trend_following", "mean_reversion", "breakout"]
+    return [x for x in defaults if x in reg][:3]
+
+
+def _choose_enabled_strategies(payload, reg):
+    req_ids = payload.get("enabled_strategies")
+    if isinstance(req_ids, list):
+        ids = [str(x).strip().lower() for x in req_ids if str(x).strip()]
+    else:
+        ids = _default_enabled_ids(reg)
+
+    out = []
+    for sid in ids:
+        if sid in reg and sid not in out:
+            out.append(sid)
+    return (out[:3]) or _default_enabled_ids(reg)
+
+
+def _call_strategy(fn, payload):
+    try:
+        sig = inspect.signature(fn)
+        if len(sig.parameters) >= 2:
+            return fn(payload, _extract_features(payload))
+    except Exception:
+        pass
+    return fn(payload)
+
+
+def _weight_of(conf):
+    if conf == "HIGH":
+        return 3
+    if conf == "MEDIUM":
+        return 2
+    return 1
+
+
+def _summarize_advisories(items):
+    buy_w = 0
+    sell_w = 0
+    hold_w = 0
+    for it in items:
+        w = _weight_of(it.get("confidence"))
+        s = it.get("signal")
+        if s == "BUY":
+            buy_w += w
+        elif s == "SELL":
+            sell_w += w
+        else:
+            hold_w += w
+
+    consensus = "HOLD"
+    if buy_w > sell_w and buy_w >= hold_w:
+        consensus = "BUY"
+    elif sell_w > buy_w and sell_w >= hold_w:
+        consensus = "SELL"
+
+    return {
+        "buy_weight": buy_w,
+        "sell_weight": sell_w,
+        "hold_weight": hold_w,
+        "consensus": consensus,
+        "strategy_count": len(items),
+    }
+
+
+def analyze_advisory(payload):
+    reg = _registry()
+    enabled = _choose_enabled_strategies(payload or {}, reg)
+    price = _f(_pick(payload.get("price_data", {}), "Price", "price"), 0.0)
+
+    items = []
+    for sid in enabled:
+        fn = reg.get(sid)
+        if fn is None:
+            continue
+        try:
+            raw = _call_strategy(fn, payload)
+            out = _normalize_signal(raw, price, sid)
+            out["strategy_id"] = sid
+            items.append(out)
+        except Exception as e:
+            items.append({
+                "strategy_id": sid,
+                "signal": "HOLD",
+                "reason": f"strategy_error: {str(e)[:80]}",
+                "stop_loss": 0,
+                "take_profit": 0,
+                "confidence": "LOW",
+                "strategy_combo": sid,
+            })
+
+    summary = _summarize_advisories(items)
+    return {
+        "strategies": items,
+        "summary": summary,
+        "enabled_strategies": enabled,
+    }
+
+
+def analyze_consensus(payload):
+    advisory = analyze_advisory(payload)
+    items = advisory.get("strategies", [])
+    summary = advisory.get("summary", {})
+    price = _f(_pick(payload.get("price_data", {}), "Price", "price"), 0.0)
+
+    if not items:
+        return {
+            "signal": "HOLD",
+            "reason": "no strategy available",
+            "stop_loss": 0,
+            "take_profit": 0,
+            "confidence": "LOW",
+            "strategy_combo": "no_trade",
+        }
+
+    best = sorted(items, key=lambda x: (_weight_of(x.get("confidence")), x.get("strategy_id", "")), reverse=True)[0]
+    signal = summary.get("consensus", "HOLD")
+
+    if signal == "HOLD":
+        stop_loss = best.get("stop_loss", 0)
+        take_profit = best.get("take_profit", 0)
+    else:
+        candidate = [x for x in items if x.get("signal") == signal]
+        if candidate:
+            candidate.sort(key=lambda x: _weight_of(x.get("confidence")), reverse=True)
+            best = candidate[0]
+        stop_loss = best.get("stop_loss", 0)
+        take_profit = best.get("take_profit", 0)
+
+    out = _normalize_signal(
+        {
+            "signal": signal,
+            "reason": (
+                f"consensus={signal}, buy={summary.get('buy_weight', 0)}, "
+                f"sell={summary.get('sell_weight', 0)}, hold={summary.get('hold_weight', 0)}, "
+                f"anchor={best.get('strategy_id', '-')}: {best.get('reason', '')}"
+            ),
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "confidence": best.get("confidence", "LOW"),
+            "strategy_combo": f"consensus_{signal.lower()}",
+        },
+        price,
+        "consensus",
+    )
+    out["advisory"] = advisory
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -373,17 +714,38 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._json(200, {"ok": True})
             return
+        if self.path == "/strategies":
+            reg = _registry()
+            self._json(
+                200,
+                {
+                    "available": sorted(list(reg.keys())),
+                    "enabled": _default_enabled_ids(reg),
+                    "upload_dir": "strategy_py/user_strategies",
+                },
+            )
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path != "/analyze":
+        if self.path not in ("/analyze", "/advisory", "/strategies/reload"):
             self._json(404, {"error": "not found"})
             return
+
+        if self.path == "/strategies/reload":
+            reg = _registry()
+            self._json(200, {"reloaded": True, "available": sorted(list(reg.keys()))})
+            return
+
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
-            payload = json.loads(raw.decode("utf-8"))
-            signal = build_signal(payload)
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+            if self.path == "/advisory":
+                self._json(200, analyze_advisory(payload))
+                return
+
+            signal = analyze_consensus(payload)
             if signal.get("stop_loss", 0) <= 0:
                 self._json(400, {"error": "invalid payload"})
                 return

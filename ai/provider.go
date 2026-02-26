@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"trade-go/config"
@@ -17,7 +18,7 @@ type Client struct {
 	aiBaseURL   string
 	aiModel     string
 	strategyURL string
-	httpClient *http.Client
+	httpClient  *http.Client
 }
 
 func NewClient() *Client {
@@ -30,7 +31,7 @@ func NewClient() *Client {
 		aiBaseURL:   strings.TrimSpace(config.Config.AIBaseURL),
 		aiModel:     model,
 		strategyURL: strings.TrimSpace(config.Config.PyStrategyURL),
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient:  &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -72,7 +73,15 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 	prompt := buildPrompt(priceData, currentPos, lastSignals)
 
 	cfg := config.Config.Trade
-	sysMsg := fmt.Sprintf("您是一位专业的交易员，专注于%s周期趋势分析。请结合K线形态和技术指标做出判断，并严格遵循JSON格式要求。", cfg.Timeframe)
+	sysDefault := fmt.Sprintf(
+		"你是专业量化交易决策引擎。交易标的=%s，周期=%s。你只能输出严格JSON，不要输出任何额外文本。你负责方向与SL/TP建议，仓位和风控由系统执行。",
+		cfg.Symbol,
+		cfg.Timeframe,
+	)
+	sysMsg := strings.TrimSpace(os.Getenv("TRADING_AI_SYSTEM_PROMPT"))
+	if sysMsg == "" {
+		sysMsg = sysDefault
+	}
 
 	reqBody := chatRequest{
 		Model: c.aiModel,
@@ -122,11 +131,11 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
 	url := strings.TrimRight(c.strategyURL, "/") + "/analyze"
 	reqBody := map[string]interface{}{
-		"price_data":    priceData,
-		"current_pos":   currentPos,
-		"last_signals":  lastSignals,
-		"timeframe":     config.Config.Trade.Timeframe,
-		"symbol":        config.Config.Trade.Symbol,
+		"price_data":   priceData,
+		"current_pos":  currentPos,
+		"last_signals": lastSignals,
+		"timeframe":    config.Config.Trade.Timeframe,
+		"symbol":       config.Config.Trade.Symbol,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -275,11 +284,17 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 		sma50Pct = (pd.Price - t.SMA50) / t.SMA50 * 100
 	}
 
-	return fmt.Sprintf(`你是一个专业的加密货币交易分析师，请基于以下BTC/USDT %s周期数据进行分析：
+	policyPrompt := strings.TrimSpace(os.Getenv("TRADING_AI_POLICY_PROMPT"))
+	if policyPrompt == "" {
+		policyPrompt = "优先保护本金；信号冲突或不确定时返回HOLD；避免低置信度反转。"
+	}
+
+	return fmt.Sprintf(`请作为量化交易决策模型，基于以下%s %s数据进行判断。
+你需要先判断市场状态（趋势/震荡/高波动），再决定信号。若信号不清晰，必须返回HOLD。
 
 %s
 
-【技术指标分析】
+【技术指标】
 移动平均线:
 - 5周期: %.2f | 价格相对: %+.2f%%
 - 20周期: %.2f | 价格相对: %+.2f%%
@@ -297,25 +312,42 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 
 %s
 
-【当前行情】
+【风控与执行约束】
+1. 你只负责方向和止盈止损建议，仓位大小由Risk Engine决定。
+2. 非高置信度时避免频繁反转；若与当前持仓冲突且证据不足，应优先HOLD。
+3. 止损必须有效（>0），且不应过近；止盈应与止损形成合理风险收益比（建议>=1.2）。
+4. 当趋势与动量冲突或波动异常时，优先保守。
+5. 不要输出固定下单金额/固定仓位建议；实际下单数量、保证金比例、杠杆以系统实盘设置为准。
+
+【当前实盘参数（仅供参考，执行以系统为准）】
+- 仓位模式: %s
+- 高信心张数: %.6f | 低信心张数: %.6f
+- 高信心保证金比例: %.2f%% | 低信心保证金比例: %.2f%%
+- 杠杆: %d
+
+【策略偏好补充】
+%s
+
+【当前行情快照】
 - 价格: $%.2f | 时间: %s
 - 最高: $%.2f | 最低: $%.2f | 成交量: %.2f BTC | 变化: %+.2f%%
 - 持仓: %s | 盈亏: %s USDT
 
-【交易原则】
-1. 强势上涨趋势 → BUY；强势下跌趋势 → SELL；震荡无方向 → HOLD
-2. 做多权重略大；非高信心不轻易反转方向
-3. 需2-3个指标同时确认才改变信号
+【输出要求】
+只返回JSON对象，字段必须齐全：
+{"signal":"BUY|SELL|HOLD","reason":"<=80字","stop_loss":数字,"take_profit":数字,"confidence":"HIGH|MEDIUM|LOW","strategy_combo":"trend_following|mean_reversion|breakout|no_trade"}
 
-请严格按JSON格式回复：
-{"signal":"BUY|SELL|HOLD","reason":"简要理由","stop_loss":价格,"take_profit":价格,"confidence":"HIGH|MEDIUM|LOW"}`,
-		cfg.Timeframe, klines.String(),
+禁止输出markdown、代码块、解释性前后缀。`,
+		cfg.Symbol, cfg.Timeframe, klines.String(),
 		t.SMA5, sma5Pct, t.SMA20, sma20Pct, t.SMA50, sma50Pct,
 		tr.ShortTerm, tr.MediumTerm, tr.Overall, tr.MACD,
 		t.RSI, rsiStatus(t.RSI), t.MACD, t.MACDSignal,
 		t.BBPosition*100, bbPosStr(t.BBPosition),
 		lv.StaticResistance, lv.StaticSupport,
 		lastSigText,
+		cfg.PositionSizingMode, cfg.HighConfidenceAmount, cfg.LowConfidenceAmount,
+		cfg.HighConfidenceMarginPct*100, cfg.LowConfidenceMarginPct*100, cfg.Leverage,
+		policyPrompt,
 		pd.Price, pd.Timestamp.Format("2006-01-02 15:04:05"),
 		pd.High, pd.Low, pd.Volume, pd.PriceChange,
 		posText, posLoss,
