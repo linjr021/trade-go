@@ -21,11 +21,16 @@ type Service struct {
 	schedulerRunning bool
 	nextRunAt        time.Time
 	cancelScheduler  context.CancelFunc
+	startedAt        time.Time
+	restartCount     int
 }
 
 func NewService(bot *trader.Bot) *Service {
 	loadPromptSettingsToEnv()
-	return &Service{bot: bot}
+	return &Service{
+		bot:       bot,
+		startedAt: time.Now(),
+	}
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
@@ -49,7 +54,14 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system-settings", s.handleSystemSettings)
 	mux.HandleFunc("/api/integrations", s.handleIntegrations)
 	mux.HandleFunc("/api/integrations/llm", s.handleAddLLMIntegration)
+	mux.HandleFunc("/api/integrations/llm/test", s.handleTestLLMIntegration)
+	mux.HandleFunc("/api/integrations/llm/update", s.handleUpdateLLMIntegration)
+	mux.HandleFunc("/api/integrations/llm/delete", s.handleDeleteLLMIntegration)
 	mux.HandleFunc("/api/integrations/exchange", s.handleAddExchangeIntegration)
+	mux.HandleFunc("/api/integrations/exchange/activate", s.handleActivateExchangeIntegration)
+	mux.HandleFunc("/api/integrations/exchange/delete", s.handleDeleteExchangeIntegration)
+	mux.HandleFunc("/api/system/runtime", s.handleSystemRuntimeStatus)
+	mux.HandleFunc("/api/system/restart", s.handleSystemSoftRestart)
 	mux.HandleFunc("/api/prompt-settings", s.handlePromptSettings)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	mux.HandleFunc("/api/settings", s.handleSettings)

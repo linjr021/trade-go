@@ -32,10 +32,19 @@ export const getBacktestHistoryDetail = (id) => http.get('/backtest-history/deta
 export const deleteBacktestHistory = (id) => http.post('/backtest-history/delete', { id })
 export const getSystemSettings = () => http.get('/system-settings')
 export const saveSystemSettings = (settings) => http.post('/system-settings', { settings })
+export const getSystemRuntimeStatus = () => http.get('/system/runtime')
+export const restartSystemRuntime = () => http.post('/system/restart', {}, { timeout: 90000 })
 export const getIntegrations = () => http.get('/integrations')
 export const addLLMIntegration = (payload) => http.post('/integrations/llm', payload, { timeout: 30000 })
+export const testLLMIntegration = (id) => http.post('/integrations/llm/test', { id }, { timeout: 30000 })
+export const updateLLMIntegration = (payload) => http.post('/integrations/llm/update', payload, { timeout: 30000 })
+export const deleteLLMIntegration = (id) => http.post('/integrations/llm/delete', { id }, { timeout: 30000 })
 export const addExchangeIntegration = (payload) =>
   http.post('/integrations/exchange', payload, { timeout: 30000 })
+export const activateExchangeIntegration = (id) =>
+  http.post('/integrations/exchange/activate', { id }, { timeout: 30000 })
+export const deleteExchangeIntegration = (id) =>
+  http.post('/integrations/exchange/delete', { id }, { timeout: 30000 })
 export const getPromptSettings = () => http.get('/prompt-settings')
 export const savePromptSettings = (prompts) => http.post('/prompt-settings', { prompts })
 export const resetPromptSettings = () => http.post('/prompt-settings', { reset_default: true })

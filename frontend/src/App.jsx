@@ -8,6 +8,11 @@ import {
   getIntegrations,
   addExchangeIntegration,
   addLLMIntegration,
+  testLLMIntegration,
+  updateLLMIntegration,
+  deleteLLMIntegration,
+  activateExchangeIntegration,
+  deleteExchangeIntegration,
   getSignals,
   getTradeRecords,
   getStatus,
@@ -25,6 +30,8 @@ import {
   runNow,
   savePromptSettings,
   saveSystemSettings,
+  getSystemRuntimeStatus,
+  restartSystemRuntime,
   startScheduler,
   stopScheduler,
   uploadStrategyFile,
@@ -42,6 +49,16 @@ const MENU_ITEMS = [
 
 const HABIT_OPTIONS = ['10m', '1h', '4h', '1D', '5D', '30D', '90D']
 const PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
+const ASSET_MIN_MONTH = '2020-01'
+const BACKTEST_MIN_MONTH = '2018-01'
+const BACKTEST_MAX_MONTH = '2025-12'
+
+function getCurrentMonth() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
+
+const HISTORY_MAX_MONTH = getCurrentMonth()
 
 const envFieldGroups = [
   {
@@ -166,13 +183,35 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, n))
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function resolveRequestError(e, fallback = '请求失败') {
+  const apiError = String(e?.response?.data?.error || '').trim()
+  if (apiError) return apiError
+  const status = Number(e?.response?.status || 0)
+  const contentType = String(e?.response?.headers?.['content-type'] || '').toLowerCase()
+  const rawBody = typeof e?.response?.data === 'string' ? e.response.data.trim() : ''
+  if (status === 500 && contentType.includes('text/plain') && rawBody === '') {
+    return '后端服务不可用（可能未启动）。请先启动 Go 后端（默认 127.0.0.1:8080）'
+  }
+  const msg = String(e?.message || '').trim()
+  if (!msg) return fallback
+  if (/network error/i.test(msg)) return '网络连接失败，请确认后端服务已启动且 /api 代理可达'
+  if (/timeout|ECONNABORTED/i.test(msg)) return '请求超时，请稍后重试'
+  return msg
+}
+
 function countHanChars(value) {
   const text = String(value || '')
   const hits = text.match(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g)
   return hits ? hits.length : 0
 }
 
-function MonthSelect({ value, onChange, min = '2018-01', max = '2025-12' }) {
+function MonthSelect({ value, onChange, min = ASSET_MIN_MONTH, max = HISTORY_MAX_MONTH }) {
   const [minY, minM] = String(min).split('-').map((x) => Number(x))
   const [maxY, maxM] = String(max).split('-').map((x) => Number(x))
   const [curYRaw, curMRaw] = String(value || '').split('-')
@@ -235,55 +274,91 @@ function parseStrategies(raw = []) {
     .filter(Boolean)
 }
 
-function parseBinanceKlines(raw) {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .map((row) => {
-      if (!Array.isArray(row) || row.length < 6) return null
-      return {
-        ts: Number(row[0]),
-        open: Number(row[1]),
-        high: Number(row[2]),
-        low: Number(row[3]),
-        close: Number(row[4]),
-        volume: Number(row[5]),
-      }
-    })
-    .filter((x) => x && x.high > 0 && x.low > 0)
+function toTradingViewSymbol(symbol) {
+  const raw = String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+  return `BINANCE:${raw || 'BTCUSDT'}`
 }
 
-function KlineChart({ data }) {
-  if (!data.length) return <p className="muted">暂无K线</p>
+function BinanceAdvancedChart({ symbol, theme }) {
+  const containerRef = useRef(null)
 
-  const width = 920
-  const height = 260
-  const pad = 16
-  const innerW = width - pad * 2
-  const innerH = height - pad * 2
-  const highMax = Math.max(...data.map((k) => k.high))
-  const lowMin = Math.min(...data.map((k) => k.low))
-  const span = Math.max(highMax - lowMin, 1e-9)
-  const step = innerW / data.length
-  const bodyW = Math.max(2, step * 0.58)
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return undefined
+    const isDark = theme === 'dark'
 
-  const x = (i) => pad + step * i + step / 2
-  const y = (p) => pad + ((highMax - p) / span) * innerH
+    container.innerHTML = ''
+    container.style.background = isDark ? '#0e1823' : '#ffffff'
+    const widget = document.createElement('div')
+    widget.className = 'tradingview-widget-container__widget'
+    container.appendChild(widget)
+
+    const script = document.createElement('script')
+    script.type = 'text/javascript'
+    script.async = true
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: toTradingViewSymbol(symbol),
+      interval: '15',
+      timezone: 'Asia/Shanghai',
+      theme: isDark ? 'dark' : 'light',
+      toolbar_bg: isDark ? '#0f1a26' : '#f8fafc',
+      backgroundColor: isDark ? '#0f1a26' : '#ffffff',
+      style: '1',
+      locale: 'zh_CN',
+      allow_symbol_change: false,
+      hide_side_toolbar: false,
+      hide_top_toolbar: false,
+      withdateranges: true,
+      save_image: false,
+      calendar: false,
+      studies: [
+        'Volume@tv-basicstudies',
+        'MAExp@tv-basicstudies',
+        'MAExp@tv-basicstudies',
+        'MAExp@tv-basicstudies',
+      ],
+      studies_overrides: {
+        'moving average exponential.length': 7,
+        'moving average exponential.length.1': 25,
+        'moving average exponential.length.2': 99,
+        'moving average exponential.plot.color': '#f1b44d',
+        'moving average exponential.plot.color.1': '#42a5f5',
+        'moving average exponential.plot.color.2': '#b388ff',
+        'volume.volume.color.0': isDark ? '#de6b6b' : '#d95d5d',
+        'volume.volume.color.1': isDark ? '#48b693' : '#3fa87e',
+      },
+      overrides: isDark
+        ? {
+            'paneProperties.background': '#0f1a26',
+            'paneProperties.backgroundType': 'solid',
+            'paneProperties.vertGridProperties.color': '#233446',
+            'paneProperties.horzGridProperties.color': '#233446',
+            'scalesProperties.textColor': '#9fb2c5',
+            'symbolWatermarkProperties.color': 'rgba(159,178,197,0.15)',
+          }
+        : {
+            'paneProperties.background': '#ffffff',
+            'paneProperties.backgroundType': 'solid',
+            'paneProperties.vertGridProperties.color': '#e6edf5',
+            'paneProperties.horzGridProperties.color': '#e6edf5',
+            'scalesProperties.textColor': '#5f7388',
+            'symbolWatermarkProperties.color': 'rgba(95,115,136,0.12)',
+          },
+      support_host: 'https://www.tradingview.com',
+    })
+    container.appendChild(script)
+
+    return () => {
+      container.innerHTML = ''
+    }
+  }, [symbol, theme])
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="kline-svg" role="img" aria-label="kline">
-      <rect x="0" y="0" width={width} height={height} rx="12" fill="#f9fafc" />
-      {data.map((k, i) => {
-        const color = k.close >= k.open ? '#0f996e' : '#d04d4d'
-        const bodyTop = Math.min(y(k.open), y(k.close))
-        const bodyH = Math.max(2, Math.abs(y(k.close) - y(k.open)))
-        return (
-          <g key={`${k.ts}-${i}`}>
-            <line x1={x(i)} y1={y(k.high)} x2={x(i)} y2={y(k.low)} stroke={color} strokeWidth="1.2" />
-            <rect x={x(i) - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={color} rx="1" />
-          </g>
-        )
-      })}
-    </svg>
+    <div className="tv-widget-shell">
+      <div ref={containerRef} className="tradingview-widget-container" />
+    </div>
   )
 }
 
@@ -464,6 +539,10 @@ export default function App() {
   const [menu, setMenu] = useState('live')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [themeMode, setThemeMode] = useState(() => localStorage.getItem('ui-theme-mode') || 'system')
+  const [prefersDark, setPrefersDark] = useState(
+    () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
 
   const [status, setStatus] = useState({})
   const [account, setAccount] = useState({})
@@ -477,15 +556,19 @@ export default function App() {
   const [paperStrategy, setPaperStrategy] = useState('ai_assisted')
   const [activePair, setActivePair] = useState('BTCUSDT')
   const [paperPair, setPaperPair] = useState('BTCUSDT')
-
-  const [liveKline, setLiveKline] = useState([])
-  const [paperKline, setPaperKline] = useState([])
-  const [klineUpdatedAt, setKlineUpdatedAt] = useState('')
   const [liveViewTab, setLiveViewTab] = useState('overview')
   const [paperViewTab, setPaperViewTab] = useState('overview')
   const [strategyPickerOpen, setStrategyPickerOpen] = useState(false)
   const [strategyDraft, setStrategyDraft] = useState([])
   const strategyPickerRef = useRef(null)
+  const [paperStrategySelection, setPaperStrategySelection] = useState(['ai_assisted'])
+  const [paperStrategyPickerOpen, setPaperStrategyPickerOpen] = useState(false)
+  const [paperStrategyDraft, setPaperStrategyDraft] = useState(['ai_assisted'])
+  const paperStrategyPickerRef = useRef(null)
+  const [btStrategySelection, setBtStrategySelection] = useState([])
+  const [btStrategyPickerOpen, setBtStrategyPickerOpen] = useState(false)
+  const [btStrategyDraft, setBtStrategyDraft] = useState([])
+  const btStrategyPickerRef = useRef(null)
 
   const [settings, setSettings] = useState({
     positionSizingMode: 'contracts',
@@ -497,9 +580,25 @@ export default function App() {
   })
   const [systemSettings, setSystemSettings] = useState({ ...systemSettingDefaults })
   const [systemSubTab, setSystemSubTab] = useState('env')
+  const [systemRuntime, setSystemRuntime] = useState(null)
+  const [backendReachability, setBackendReachability] = useState({
+    status: 'unconfigured',
+    message: '未检测',
+    checkedAt: '',
+  })
+  const [loadingSystemRuntime, setLoadingSystemRuntime] = useState(false)
+  const [restartingBackend, setRestartingBackend] = useState(false)
   const [llmConfigs, setLlmConfigs] = useState([])
   const [exchangeConfigs, setExchangeConfigs] = useState([])
+  const [activeExchangeId, setActiveExchangeId] = useState('')
+  const [exchangeBound, setExchangeBound] = useState(false)
+  const [activatingExchangeId, setActivatingExchangeId] = useState('')
+  const [deletingExchangeId, setDeletingExchangeId] = useState('')
   const [addingLLM, setAddingLLM] = useState(false)
+  const [editingLLMId, setEditingLLMId] = useState('')
+  const [deletingLLMId, setDeletingLLMId] = useState('')
+  const [testingLLMId, setTestingLLMId] = useState('')
+  const [llmStatusMap, setLlmStatusMap] = useState({})
   const [addingExchange, setAddingExchange] = useState(false)
   const [showLLMModal, setShowLLMModal] = useState(false)
   const [showExchangeModal, setShowExchangeModal] = useState(false)
@@ -534,6 +633,7 @@ export default function App() {
   const [genAllowReversal, setGenAllowReversal] = useState(false)
   const [genLowConfAction, setGenLowConfAction] = useState('hold')
   const [genDirectionBias, setGenDirectionBias] = useState('balanced')
+  const [strategyGenMode, setStrategyGenMode] = useState('')
   const [generatedStrategies, setGeneratedStrategies] = useState([])
   const [selectedRuleId, setSelectedRuleId] = useState('')
   const [renameRuleName, setRenameRuleName] = useState('')
@@ -564,13 +664,17 @@ export default function App() {
 
   const [liveStrategyStartedAt, setLiveStrategyStartedAt] = useState(Date.now())
   const [assetRange, setAssetRange] = useState('30D')
-  const [assetMonth, setAssetMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [assetMonth, setAssetMonth] = useState(HISTORY_MAX_MONTH)
   const [assetOverview, setAssetOverview] = useState({})
   const [assetTrend, setAssetTrend] = useState([])
   const [assetCalendar, setAssetCalendar] = useState([])
   const [assetDistribution, setAssetDistribution] = useState([])
 
   const schedulerRunning = Boolean(status?.scheduler_running)
+  const resolvedTheme = useMemo(() => {
+    if (themeMode === 'system') return prefersDark ? 'dark' : 'light'
+    return themeMode === 'dark' ? 'dark' : 'light'
+  }, [themeMode, prefersDark])
   const productName = String(systemSettings?.PRODUCT_NAME || '').trim() || 'AI 交易看板'
   const generatedStrategyNames = useMemo(
     () => generatedStrategies.map((s) => String(s?.name || '').trim()).filter(Boolean),
@@ -581,7 +685,22 @@ export default function App() {
     [strategyOptions, generatedStrategyNames],
   )
   const selectedStrategyText = enabledStrategies.length ? enabledStrategies.join(', ') : '请选择策略'
+  const paperSelectedStrategyText = paperStrategySelection.length ? paperStrategySelection.join(', ') : '请选择策略'
+  const btSelectedStrategyText = btStrategySelection.length ? btStrategySelection.join(', ') : '请选择策略'
   const liveStrategyLabel = enabledStrategies.length ? enabledStrategies.join(' / ') : (activeStrategy || '-')
+  const runtimeComponents = useMemo(() => {
+    const checkedAt = String(backendReachability.checkedAt || '').trim()
+    const probeMessage = checkedAt
+      ? `${backendReachability.message}（${fmtTime(checkedAt)}）`
+      : backendReachability.message
+    const probe = {
+      name: '后端连通性',
+      status: backendReachability.status || 'unconfigured',
+      message: probeMessage || '未检测',
+    }
+    const serverComponents = Array.isArray(systemRuntime?.components) ? systemRuntime.components : []
+    return [probe, ...serverComponents]
+  }, [backendReachability, systemRuntime])
 
   const refreshCore = async (silent = false) => {
     if (!silent) {
@@ -649,6 +768,14 @@ export default function App() {
   }, [enabledStrategies])
 
   useEffect(() => {
+    setPaperStrategyDraft(paperStrategySelection)
+  }, [paperStrategySelection])
+
+  useEffect(() => {
+    setBtStrategyDraft(btStrategySelection)
+  }, [btStrategySelection])
+
+  useEffect(() => {
     if (!strategyPickerOpen) return undefined
     const onDocMouseDown = (e) => {
       if (strategyPickerRef.current && !strategyPickerRef.current.contains(e.target)) {
@@ -665,6 +792,42 @@ export default function App() {
       document.removeEventListener('keydown', onDocKeyDown)
     }
   }, [strategyPickerOpen])
+
+  useEffect(() => {
+    if (!paperStrategyPickerOpen) return undefined
+    const onDocMouseDown = (e) => {
+      if (paperStrategyPickerRef.current && !paperStrategyPickerRef.current.contains(e.target)) {
+        setPaperStrategyPickerOpen(false)
+      }
+    }
+    const onDocKeyDown = (e) => {
+      if (e.key === 'Escape') setPaperStrategyPickerOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onDocKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onDocKeyDown)
+    }
+  }, [paperStrategyPickerOpen])
+
+  useEffect(() => {
+    if (!btStrategyPickerOpen) return undefined
+    const onDocMouseDown = (e) => {
+      if (btStrategyPickerRef.current && !btStrategyPickerRef.current.contains(e.target)) {
+        setBtStrategyPickerOpen(false)
+      }
+    }
+    const onDocKeyDown = (e) => {
+      if (e.key === 'Escape') setBtStrategyPickerOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onDocKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onDocKeyDown)
+    }
+  }, [btStrategyPickerOpen])
 
   const loadSystemAndStrategies = async () => {
     const [sysRes, strategyRes, promptRes, integrationRes] = await Promise.allSettled([
@@ -716,23 +879,36 @@ export default function App() {
         setStrategyOptions(mergedSet)
         if (!mergedExecution.includes(activeStrategy)) setActiveStrategy(mergedExecution[0])
         if (!mergedExecution.includes(paperStrategy)) setPaperStrategy(mergedExecution[0])
+        if (!btStrategy || !mergedExecution.includes(btStrategy)) setBtStrategy(mergedExecution[0])
+        setPaperStrategySelection((prev) => {
+          const normalized = prev.filter((x) => mergedExecution.includes(x)).slice(0, 3)
+          return normalized.length ? normalized : [mergedExecution[0]]
+        })
+        setBtStrategySelection((prev) => {
+          const normalized = prev.filter((x) => mergedExecution.includes(x)).slice(0, 3)
+          if (normalized.length) return normalized
+          if (btStrategy && mergedExecution.includes(btStrategy)) return [btStrategy]
+          return [mergedExecution[0]]
+        })
         setEnabledStrategies((enabledMerged.length ? enabledMerged : [mergedExecution[0]]).slice(0, 3))
       }
     }
     if (integrationRes.status === 'fulfilled') {
-      setLlmConfigs(Array.isArray(integrationRes.value?.data?.llms) ? integrationRes.value.data.llms : [])
-      setExchangeConfigs(Array.isArray(integrationRes.value?.data?.exchanges) ? integrationRes.value.data.exchanges : [])
-    }
-  }
-
-  async function fetchKline(symbol, setter) {
-    try {
-      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=90`)
-      const raw = await res.json()
-      setter(parseBinanceKlines(raw))
-      setKlineUpdatedAt(new Date().toISOString())
-    } catch {
-      // ignore transient kline errors
+      const data = integrationRes.value?.data || {}
+      const llms = Array.isArray(data.llms) ? data.llms : []
+      setLlmConfigs(llms)
+      setLlmStatusMap((prev) => {
+        const next = {}
+        for (const row of llms) {
+          const id = String(row?.id || '').trim()
+          if (!id) continue
+          next[id] = prev[id] || { state: 'unknown', message: '未检测' }
+        }
+        return next
+      })
+      setExchangeConfigs(Array.isArray(data.exchanges) ? data.exchanges : [])
+      setActiveExchangeId(String(data.active_exchange_id || ''))
+      setExchangeBound(Boolean(data.exchange_bound))
     }
   }
 
@@ -745,18 +921,6 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    fetchKline(activePair, setLiveKline)
-    const timer = setInterval(() => fetchKline(activePair, setLiveKline), 1000)
-    return () => clearInterval(timer)
-  }, [activePair])
-
-  useEffect(() => {
-    fetchKline(paperPair, setPaperKline)
-    const timer = setInterval(() => fetchKline(paperPair, setPaperKline), 1000)
-    return () => clearInterval(timer)
-  }, [paperPair])
-
-  useEffect(() => {
     if (!toast.visible) return undefined
     const timer = setTimeout(() => {
       setToast((t) => ({ ...t, visible: false }))
@@ -766,6 +930,73 @@ export default function App() {
 
   const showToast = (type, message) => {
     setToast({ visible: true, type, message: String(message || '') })
+  }
+
+  useEffect(() => {
+    if (!window.matchMedia) return undefined
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (e) => setPrefersDark(Boolean(e.matches))
+    if (media.addEventListener) media.addEventListener('change', onChange)
+    else media.addListener(onChange)
+    return () => {
+      if (media.removeEventListener) media.removeEventListener('change', onChange)
+      else media.removeListener(onChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('ui-theme-mode', themeMode)
+  }, [themeMode])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', resolvedTheme)
+  }, [resolvedTheme])
+
+  const loadSystemRuntime = async (silent = false) => {
+    if (!silent) setLoadingSystemRuntime(true)
+    try {
+      const res = await getSystemRuntimeStatus()
+      setSystemRuntime(res?.data || null)
+      setBackendReachability({
+        status: 'connected',
+        message: '后端 API 可达',
+        checkedAt: new Date().toISOString(),
+      })
+    } catch (e) {
+      const reason = resolveRequestError(e, '加载系统状态失败')
+      setBackendReachability({
+        status: 'warning',
+        message: `后端不可达：${reason}`,
+        checkedAt: new Date().toISOString(),
+      })
+      if (!silent) setError(reason)
+    } finally {
+      if (!silent) setLoadingSystemRuntime(false)
+    }
+  }
+
+  const restartBackend = async () => {
+    setRestartingBackend(true)
+    setError('')
+    try {
+      await restartSystemRuntime()
+      await sleep(200)
+      const settled = await Promise.allSettled([refreshCore(true), loadSystemAndStrategies(), loadSystemRuntime(true)])
+      const failed = settled.find((item) => item.status === 'rejected')
+      if (failed && failed.status === 'rejected') {
+        const reason = resolveRequestError(failed.reason, '状态刷新失败')
+        setError(`后台已重启，但状态刷新失败：${reason}`)
+        showToast('warning', `后台已重启，但状态刷新失败：${reason}`)
+      } else {
+        showToast('success', '后台软重启完成')
+      }
+    } catch (e) {
+      const reason = resolveRequestError(e, '后台重启失败')
+      setError(reason)
+      showToast('error', `后台重启失败：${reason}`)
+    } finally {
+      setRestartingBackend(false)
+    }
   }
 
   const loadAssetOverview = async () => {
@@ -878,6 +1109,13 @@ export default function App() {
     if (menu !== 'backtest') return
     loadBacktestHistory(false)
   }, [menu])
+
+  useEffect(() => {
+    if (menu !== 'system' || systemSubTab !== 'status') return undefined
+    loadSystemRuntime(false)
+    const timer = setInterval(() => loadSystemRuntime(true), 10000)
+    return () => clearInterval(timer)
+  }, [menu, systemSubTab])
 
   const marketEmotion = useMemo(() => {
     const confidence = String(status?.runtime?.last_signal?.confidence || 'LOW').toUpperCase()
@@ -1003,22 +1241,115 @@ export default function App() {
     setError('')
     try {
       const payload = {
+        id: String(editingLLMId || '').trim(),
         name: String(newLLM.name || '').trim(),
         base_url: String(newLLM.base_url || '').trim(),
         api_key: String(newLLM.api_key || '').trim(),
         model: String(newLLM.model || '').trim(),
       }
-      const res = await addLLMIntegration(payload)
-      setLlmConfigs(Array.isArray(res?.data?.llms) ? res.data.llms : [])
+      const res = editingLLMId ? await updateLLMIntegration(payload) : await addLLMIntegration(payload)
+      const llms = Array.isArray(res?.data?.llms) ? res.data.llms : []
+      const savedID = String(editingLLMId || res?.data?.added?.id || res?.data?.updated?.id || '').trim()
+      setLlmConfigs(llms)
+      setLlmStatusMap((prev) => {
+        const next = {}
+        for (const row of llms) {
+          const id = String(row?.id || '').trim()
+          if (!id) continue
+          next[id] = prev[id] || { state: 'unknown', message: '未检测' }
+        }
+        if (savedID) {
+          next[savedID] = { state: 'reachable', message: 'API 可达' }
+        }
+        return next
+      })
       setNewLLM({ name: '', base_url: '', api_key: '', model: '' })
+      setEditingLLMId('')
       setShowLLMModal(false)
-      showToast('success', `LLM 参数添加并验证成功（ID=${res?.data?.added?.id || '-'})`)
+      if (editingLLMId) {
+        showToast('success', `智能体参数更新并验证成功（ID=${payload.id || '-'})`)
+      } else {
+        showToast('success', `智能体参数添加并验证成功（ID=${res?.data?.added?.id || '-'})`)
+      }
     } catch (e) {
-      const reason = e?.response?.data?.error || e?.message || 'LLM 参数添加失败'
+      const reason = e?.response?.data?.error || e?.message || (editingLLMId ? '智能体参数更新失败' : '智能体参数添加失败')
       setError(reason)
-      showToast('error', `添加失败：${reason}`)
+      showToast('error', `${editingLLMId ? '更新失败' : '添加失败'}：${reason}`)
     } finally {
       setAddingLLM(false)
+    }
+  }
+
+  const openEditLLMModal = (row) => {
+    const id = String(row?.id || '').trim()
+    if (!id) return
+    setEditingLLMId(id)
+    setNewLLM({
+      name: String(row?.name || '').trim(),
+      base_url: String(row?.base_url || '').trim(),
+      api_key: String(row?.api_key || '').trim(),
+      model: String(row?.model || '').trim(),
+    })
+    setShowLLMModal(true)
+  }
+
+  const removeLLMConfig = async (id) => {
+    const llmID = String(id || '').trim()
+    if (!llmID) return
+    if (!window.confirm(`确认删除智能体参数 ID=${llmID} 吗？`)) return
+    setDeletingLLMId(llmID)
+    setError('')
+    try {
+      const res = await deleteLLMIntegration(llmID)
+      setLlmConfigs(Array.isArray(res?.data?.llms) ? res.data.llms : [])
+      setLlmStatusMap((prev) => {
+        const next = { ...prev }
+        delete next[llmID]
+        return next
+      })
+      if (editingLLMId === llmID) {
+        setEditingLLMId('')
+        setShowLLMModal(false)
+        setNewLLM({ name: '', base_url: '', api_key: '', model: '' })
+      }
+      showToast('success', `智能体参数已删除（ID=${llmID}）`)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '删除失败'
+      setError(reason)
+      showToast('error', `删除失败：${reason}`)
+    } finally {
+      setDeletingLLMId('')
+    }
+  }
+
+  const testLLMConfigReachability = async (id) => {
+    const llmID = String(id || '').trim()
+    if (!llmID) return
+    setTestingLLMId(llmID)
+    setError('')
+    try {
+      const res = await testLLMIntegration(llmID)
+      const reachable = Boolean(res?.data?.reachable)
+      const message = String(res?.data?.message || (reachable ? 'API 可达' : 'API 不可达')).trim()
+      setLlmStatusMap((prev) => ({
+        ...prev,
+        [llmID]: { state: reachable ? 'reachable' : 'unreachable', message },
+      }))
+      if (reachable) {
+        showToast('success', `智能体参数 #${llmID} 可达`)
+      } else {
+        showToast('warning', `智能体参数 #${llmID} 不可达：${message}`)
+      }
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '测试失败'
+      setError(reason)
+      setLlmStatusMap((prev) => ({
+        ...prev,
+        [llmID]: { state: 'unreachable', message: reason },
+      }))
+      showToast('error', `测试失败：${reason}`)
+    } finally {
+      setTestingLLMId('')
     }
   }
 
@@ -1035,6 +1366,8 @@ export default function App() {
       }
       const res = await addExchangeIntegration(payload)
       setExchangeConfigs(Array.isArray(res?.data?.exchanges) ? res.data.exchanges : [])
+      setActiveExchangeId(String(res?.data?.active_exchange_id || ''))
+      setExchangeBound(Boolean(res?.data?.exchange_bound))
       setNewExchange({
         name: '',
         exchange: 'binance',
@@ -1050,6 +1383,49 @@ export default function App() {
       showToast('error', `添加失败：${reason}`)
     } finally {
       setAddingExchange(false)
+    }
+  }
+
+  const bindExchangeAccount = async (id) => {
+    const exchangeID = String(id || '').trim()
+    if (!exchangeID) return
+    setActivatingExchangeId(exchangeID)
+    setError('')
+    try {
+      const res = await activateExchangeIntegration(exchangeID)
+      setActiveExchangeId(String(res?.data?.active_exchange_id || exchangeID))
+      setExchangeBound(Boolean(res?.data?.exchange_bound))
+      await loadSystemAndStrategies()
+      await refreshCore(true)
+      showToast('success', `账号绑定成功（ID=${exchangeID}）`)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '绑定失败'
+      setError(reason)
+      showToast('error', `绑定失败：${reason}`)
+    } finally {
+      setActivatingExchangeId('')
+    }
+  }
+
+  const removeExchangeAccount = async (id) => {
+    const exchangeID = String(id || '').trim()
+    if (!exchangeID) return
+    if (!window.confirm(`确认删除交易所账号 ID=${exchangeID} 吗？`)) return
+    setDeletingExchangeId(exchangeID)
+    setError('')
+    try {
+      const res = await deleteExchangeIntegration(exchangeID)
+      setExchangeConfigs(Array.isArray(res?.data?.exchanges) ? res.data.exchanges : [])
+      setActiveExchangeId(String(res?.data?.active_exchange_id || ''))
+      setExchangeBound(Boolean(res?.data?.exchange_bound))
+      await refreshCore(true)
+      showToast('success', `账号已删除（ID=${exchangeID}）`)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '删除失败'
+      setError(reason)
+      showToast('error', `删除失败：${reason}`)
+    } finally {
+      setDeletingExchangeId('')
     }
   }
 
@@ -1098,9 +1474,31 @@ export default function App() {
   const generateStrategy = async () => {
     setGeneratingStrategy(true)
     setError('')
+    setStrategyGenMode('')
     const id = `st_${Date.now()}`
+    const buildLocalFallbackRule = (reason) => {
+      const fallbackName = `AI_${genPair}_${habit}_${new Date().toISOString().slice(0, 10)}`
+      return {
+        id,
+        name: fallbackName,
+        habit,
+        symbol: genPair,
+        style: genStyle,
+        minRR: clamp(genMinRR, 1.0, 10),
+        allowReversal: Boolean(genAllowReversal),
+        lowConfAction: genLowConfAction,
+        directionBias: genDirectionBias,
+        createdAt: new Date().toISOString(),
+        prompt: promptSettings.strategy_generator_prompt_template,
+        preferencePrompt:
+          `交易风格=${habit}；策略样式=${genStyle}；方向偏好=${genDirectionBias}；` +
+          `低信心处理=${genLowConfAction}；允许反转=${genAllowReversal ? '是' : '否'}。`,
+        logic: '前端本地回退：按当前选项生成默认规则，待后端恢复后可重新生成。',
+        basis: `回退原因：${reason}`,
+      }
+    }
     try {
-      const res = await generateStrategyPreference({
+      const payload = {
         symbol: genPair,
         habit,
         strategy_style: genStyle,
@@ -1108,7 +1506,16 @@ export default function App() {
         allow_reversal: Boolean(genAllowReversal),
         low_conf_action: genLowConfAction,
         direction_bias: genDirectionBias,
-      })
+      }
+      let res
+      try {
+        res = await generateStrategyPreference(payload)
+      } catch {
+        // 网络抖动时重试一次
+        await sleep(300)
+        res = await generateStrategyPreference(payload)
+      }
+      const usedFallback = Boolean(res?.data?.fallback)
       const generated = res?.data?.generated || {}
       const name =
         String(generated.strategy_name || '').trim() ||
@@ -1137,10 +1544,24 @@ export default function App() {
       setGeneratedStrategies((arr) => [rule, ...arr])
       setSelectedRuleId(id)
       setBuilderTab('rules')
+      setStrategyGenMode(usedFallback ? 'fallback' : 'llm')
       if (!btStrategy) setBtStrategy(name)
+      if (usedFallback) {
+        showToast('warning', '策略已生成（智能体未接入或调用失败，使用模板回退）')
+      } else {
+        showToast('success', '策略生成成功')
+      }
 
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || '策略生成失败')
+      const reason = resolveRequestError(e, '策略生成失败')
+      const rule = buildLocalFallbackRule(reason)
+      setGeneratedStrategies((arr) => [rule, ...arr])
+      setSelectedRuleId(id)
+      setBuilderTab('rules')
+      setStrategyGenMode('fallback')
+      if (!btStrategy) setBtStrategy(rule.name)
+      setError(`策略服务异常，已本地回退生成：${reason}`)
+      showToast('warning', `策略服务异常，已本地回退生成：${reason}`)
     } finally {
       setGeneratingStrategy(false)
     }
@@ -1164,6 +1585,28 @@ export default function App() {
     })
   }
 
+  const togglePaperStrategyDraft = (id) => {
+    setPaperStrategyDraft((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id)
+      if (prev.length >= 3) {
+        setError('最多同时选择 3 条策略')
+        return prev
+      }
+      return [...prev, id]
+    })
+  }
+
+  const toggleBtStrategyDraft = (id) => {
+    setBtStrategyDraft((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id)
+      if (prev.length >= 3) {
+        setError('最多同时选择 3 条策略')
+        return prev
+      }
+      return [...prev, id]
+    })
+  }
+
   const confirmStrategySelection = () => {
     const normalized = strategyDraft.filter((x) => executionStrategyOptions.includes(x)).slice(0, 3)
     const next = normalized.length ? normalized : (executionStrategyOptions[0] ? [executionStrategyOptions[0]] : [])
@@ -1173,6 +1616,22 @@ export default function App() {
       setLiveStrategyStartedAt(Date.now())
     }
     setStrategyPickerOpen(false)
+  }
+
+  const confirmPaperStrategySelection = () => {
+    const normalized = paperStrategyDraft.filter((x) => executionStrategyOptions.includes(x)).slice(0, 3)
+    const next = normalized.length ? normalized : (executionStrategyOptions[0] ? [executionStrategyOptions[0]] : [])
+    setPaperStrategySelection(next)
+    setPaperStrategy(next[0] || '')
+    setPaperStrategyPickerOpen(false)
+  }
+
+  const confirmBtStrategySelection = () => {
+    const normalized = btStrategyDraft.filter((x) => executionStrategyOptions.includes(x)).slice(0, 3)
+    const next = normalized.length ? normalized : (executionStrategyOptions[0] ? [executionStrategyOptions[0]] : [])
+    setBtStrategySelection(next)
+    setBtStrategy(next[0] || '')
+    setBtStrategyPickerOpen(false)
   }
 
   const renameGeneratedStrategy = () => {
@@ -1209,6 +1668,10 @@ export default function App() {
     setGeneratedStrategies((arr) => arr.map((s) => (s.id === selectedRule.id ? { ...s, name: nextName } : s)))
     setEnabledStrategies((arr) => arr.map((x) => (x === oldName ? nextName : x)))
     setStrategyDraft((arr) => arr.map((x) => (x === oldName ? nextName : x)))
+    setPaperStrategySelection((arr) => arr.map((x) => (x === oldName ? nextName : x)))
+    setPaperStrategyDraft((arr) => arr.map((x) => (x === oldName ? nextName : x)))
+    setBtStrategySelection((arr) => arr.map((x) => (x === oldName ? nextName : x)))
+    setBtStrategyDraft((arr) => arr.map((x) => (x === oldName ? nextName : x)))
     setActiveStrategy((v) => (v === oldName ? nextName : v))
     setPaperStrategy((v) => (v === oldName ? nextName : v))
     setBtStrategy((v) => (v === oldName ? nextName : v))
@@ -1283,7 +1746,6 @@ export default function App() {
         throw new Error('结束时间不能早于开始时间')
       }
       const res = await runBacktestApi({
-        strategy_name: btStrategy || activeStrategy || 'default_strategy',
         pair: btPair,
         habit,
         start_month: btStart,
@@ -1296,6 +1758,7 @@ export default function App() {
         high_confidence_margin_pct: clamp(btHighConfidenceMarginPct, 0, 100) / 100,
         low_confidence_margin_pct: clamp(btLowConfidenceMarginPct, 0, 100) / 100,
         paper_margin: clamp(paperMargin, 0, 1000000),
+        strategy_name: btStrategySelection[0] || btStrategy || activeStrategy || 'default_strategy',
       })
       const summary = res?.data?.summary || null
       const records = Array.isArray(res?.data?.records) ? res.data.records : []
@@ -1369,7 +1832,7 @@ export default function App() {
     }
   }
 
-  const renderOverviewCards = (klineData, pair, strategyName, extra = null) => (
+  const renderOverviewCards = (pair, strategyName, extra = null) => (
     <div className="builder-pane">
       <div className="overview-grid">
         <article className="metric-card"><h4>今日市场情绪</h4><p>{marketEmotion}</p></article>
@@ -1383,9 +1846,9 @@ export default function App() {
       <section className="sub-window kline-card">
         <div className="card-head">
           <h3>K 线图</h3>
-          <span>{pair} · 1s刷新 · {fmtTime(klineUpdatedAt)}</span>
+          <span>{pair} · Binance 高级图表 · EMA(7/25/99)</span>
         </div>
-        <KlineChart data={klineData} />
+        <BinanceAdvancedChart key={`${pair}-${resolvedTheme}`} symbol={pair} theme={resolvedTheme} />
       </section>
     </div>
   )
@@ -1415,8 +1878,18 @@ export default function App() {
 
       <main className="content">
         <header className="content-head">
-          <h1>{MENU_ITEMS.find((m) => m.key === menu)?.label}</h1>
-          <p>状态：{loading ? '加载中' : '就绪'} {error ? `| ${error}` : ''}</p>
+          <div className="content-head-left">
+            <h1>{MENU_ITEMS.find((m) => m.key === menu)?.label}</h1>
+            <p>状态：{loading ? '加载中' : '就绪'} {error ? `| ${error}` : ''}</p>
+          </div>
+          <div className="theme-switcher">
+            <span>主题</span>
+            <select value={themeMode} onChange={(e) => setThemeMode(e.target.value)}>
+              <option value="light">浅色模式</option>
+              <option value="dark">深色模式</option>
+              <option value="system">跟随系统</option>
+            </select>
+          </div>
         </header>
 
         {menu === 'live' && (
@@ -1589,7 +2062,7 @@ export default function App() {
                 </button>
               </div>
               {liveViewTab === 'overview' ? (
-                renderOverviewCards(liveKline, activePair, liveStrategyLabel)
+                renderOverviewCards(activePair, liveStrategyLabel)
               ) : (
                 <div className="builder-pane">
                   <TradeRecordsTable records={tradeRecords.filter((r) => !r.symbol || r.symbol === activePair)} />
@@ -1611,10 +2084,58 @@ export default function App() {
                   </select>
                 </label>
                 <label>
-                  <span>交易策略</span>
-                  <select value={paperStrategy} onChange={(e) => setPaperStrategy(e.target.value)}>
-                    {executionStrategyOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
+                  <span>交易策略（多选）</span>
+                  <div className="strategy-picker" ref={paperStrategyPickerRef}>
+                    <button
+                      type="button"
+                      className="strategy-picker-trigger"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        if (!paperStrategyPickerOpen) setPaperStrategyDraft(paperStrategySelection)
+                        setPaperStrategyPickerOpen((v) => !v)
+                      }}
+                    >
+                      {paperSelectedStrategyText}
+                    </button>
+                    {paperStrategyPickerOpen ? (
+                      <div className="strategy-picker-menu">
+                        <div className="strategy-picker-list">
+                          {executionStrategyOptions.map((s) => (
+                            <label key={`paper-strategy-pick-${s}`} className="strategy-picker-item">
+                              <input
+                                type="checkbox"
+                                checked={paperStrategyDraft.includes(s)}
+                                disabled={!paperStrategyDraft.includes(s) && paperStrategyDraft.length >= 3}
+                                onChange={() => togglePaperStrategyDraft(s)}
+                              />
+                              <span>{s}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <div className="actions-row end">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              setPaperStrategyPickerOpen(false)
+                            }}
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            className="primary"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              confirmPaperStrategySelection()
+                            }}
+                          >
+                            确认
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </label>
                 <label>
                   <span>模拟保证金(USDT)</span>
@@ -1645,9 +2166,8 @@ export default function App() {
               </div>
               {paperViewTab === 'overview' ? (
                 renderOverviewCards(
-                  paperKline,
                   paperPair,
-                  paperStrategy,
+                  paperSelectedStrategyText,
                   <section className="sub-window"><h3>模拟交易补充</h3><p>该板块不发真实订单，仅用于策略参数演练与回测准备。</p></section>
                 )
               ) : (
@@ -1686,7 +2206,12 @@ export default function App() {
               <section className="card asset-equal-card">
                 <div className="card-head">
                   <h3>盈亏日历</h3>
-                  <MonthSelect value={assetMonth} min="2018-01" max="2025-12" onChange={setAssetMonth} />
+                  <MonthSelect
+                    value={assetMonth}
+                    min={ASSET_MIN_MONTH}
+                    max={HISTORY_MAX_MONTH}
+                    onChange={setAssetMonth}
+                  />
                 </div>
                 <PnLCalendar month={assetMonth} days={assetCalendar} />
               </section>
@@ -1718,6 +2243,16 @@ export default function App() {
                 <button className={builderTab === 'generate' ? 'tab active' : 'tab'} onClick={() => setBuilderTab('generate')}>策略生成</button>
                 <button className={builderTab === 'rules' ? 'tab active' : 'tab'} onClick={() => setBuilderTab('rules')}>策略规则</button>
               </div>
+              {strategyGenMode === 'llm' ? (
+                <div className="strategy-gen-hint llm">
+                  使用智能体生成
+                </div>
+              ) : null}
+              {strategyGenMode === 'fallback' ? (
+                <div className="strategy-gen-hint fallback">
+                  智能体未接入或调用失败，使用模板回退生成
+                </div>
+              ) : null}
 
               {builderTab === 'generate' && (
                 <div className="builder-pane">
@@ -1879,11 +2414,58 @@ export default function App() {
               <div className="builder-pane">
                 <div className="form-grid backtest-grid">
                   <label className="bt-strategy">
-                    <span>策略</span>
-                    <select value={btStrategy} onChange={(e) => setBtStrategy(e.target.value)}>
-                      <option value="">请选择</option>
-                      {executionStrategyOptions.map((s) => <option key={`bt-${s}`} value={s}>{s}</option>)}
-                    </select>
+                    <span>交易策略（多选）</span>
+                    <div className="strategy-picker" ref={btStrategyPickerRef}>
+                      <button
+                        type="button"
+                        className="strategy-picker-trigger"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          if (!btStrategyPickerOpen) setBtStrategyDraft(btStrategySelection)
+                          setBtStrategyPickerOpen((v) => !v)
+                        }}
+                      >
+                        {btSelectedStrategyText}
+                      </button>
+                      {btStrategyPickerOpen ? (
+                        <div className="strategy-picker-menu">
+                          <div className="strategy-picker-list">
+                            {executionStrategyOptions.map((s) => (
+                              <label key={`bt-strategy-pick-${s}`} className="strategy-picker-item">
+                                <input
+                                  type="checkbox"
+                                  checked={btStrategyDraft.includes(s)}
+                                  disabled={!btStrategyDraft.includes(s) && btStrategyDraft.length >= 3}
+                                  onChange={() => toggleBtStrategyDraft(s)}
+                                />
+                                <span>{s}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <div className="actions-row end">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                setBtStrategyPickerOpen(false)
+                              }}
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              className="primary"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                confirmBtStrategySelection()
+                              }}
+                            >
+                              确认
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                   </label>
                   <label className="bt-pair">
                     <span>交易对</span>
@@ -1983,8 +2565,8 @@ export default function App() {
                       <span>开始时间</span>
                       <MonthSelect
                         value={btStart}
-                        min="2018-01"
-                        max="2025-12"
+                        min={BACKTEST_MIN_MONTH}
+                        max={BACKTEST_MAX_MONTH}
                         onChange={(v) => {
                           setBtStart(v)
                           if (v > btEnd) setBtEnd(v)
@@ -1996,8 +2578,8 @@ export default function App() {
                       <span>结束时间</span>
                       <MonthSelect
                         value={btEnd}
-                        min="2018-01"
-                        max="2025-12"
+                        min={BACKTEST_MIN_MONTH}
+                        max={BACKTEST_MAX_MONTH}
                         onChange={(v) => {
                           setBtEnd(v < btStart ? btStart : v)
                         }}
@@ -2101,6 +2683,12 @@ export default function App() {
               <h3>系统设置</h3>
               <div className="tab-row">
                 <button
+                  className={systemSubTab === 'status' ? 'tab active' : 'tab'}
+                  onClick={() => setSystemSubTab('status')}
+                >
+                  系统状态
+                </button>
+                <button
                   className={systemSubTab === 'env' ? 'tab active' : 'tab'}
                   onClick={() => setSystemSubTab('env')}
                 >
@@ -2110,7 +2698,7 @@ export default function App() {
                   className={systemSubTab === 'llm' ? 'tab active' : 'tab'}
                   onClick={() => setSystemSubTab('llm')}
                 >
-                  LLM 参数
+                  智能体参数
                 </button>
                 <button
                   className={systemSubTab === 'exchange' ? 'tab active' : 'tab'}
@@ -2125,6 +2713,115 @@ export default function App() {
                   提示词管理
                 </button>
               </div>
+
+              {systemSubTab === 'status' && (
+                <div className="builder-pane">
+                  <section className="sub-window">
+                    <div className="card-head">
+                      <h4>系统运行状态</h4>
+                      <span>{loadingSystemRuntime ? '更新中...' : '已更新'}</span>
+                    </div>
+                    <div className="actions-row end">
+                      <button onClick={() => loadSystemRuntime(false)} disabled={loadingSystemRuntime}>
+                        {loadingSystemRuntime ? '刷新中...' : '刷新状态'}
+                      </button>
+                      <button
+                        onClick={restartBackend}
+                        disabled={restartingBackend}
+                        className={`primary save-config-btn ${restartingBackend ? 'is-saving' : ''}`}
+                      >
+                        {restartingBackend ? '重启中...' : '重启后台'}
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="sub-window">
+                    <h4>服务器各组件状态</h4>
+                    <div className="status-grid">
+                      {runtimeComponents.map((c, idx) => (
+                        <article key={`comp-${idx}`} className={`status-chip status-${c.status || 'unknown'}`}>
+                          <div className="status-chip-title">{c.name || '-'}</div>
+                          <div className="status-chip-text">{c.message || '-'}</div>
+                        </article>
+                      ))}
+                      {!runtimeComponents.length ? (
+                        <p className="muted">暂无组件状态数据</p>
+                      ) : null}
+                    </div>
+                  </section>
+
+                  <section className="sub-window">
+                    <h4>后台服务器资源状态</h4>
+                    <div className="summary-grid">
+                      <article className="metric-card"><h4>主机名</h4><p>{systemRuntime?.server?.hostname || '-'}</p></article>
+                      <article className="metric-card"><h4>运行时长</h4><p>{fmtNum((Number(systemRuntime?.server?.uptime_sec || 0) / 3600), 2)} h</p></article>
+                      <article className="metric-card"><h4>重启次数</h4><p>{systemRuntime?.server?.restart_count ?? 0}</p></article>
+                      <article className="metric-card"><h4>Goroutines</h4><p>{systemRuntime?.resources?.goroutines ?? 0}</p></article>
+                      <article className="metric-card"><h4>Heap(MB)</h4><p>{fmtNum(systemRuntime?.resources?.heap_alloc_mb, 2)}</p></article>
+                      <article className="metric-card"><h4>Sys(MB)</h4><p>{fmtNum(systemRuntime?.resources?.sys_memory_mb, 2)}</p></article>
+                    </div>
+                  </section>
+
+                  <section className="sub-window">
+                    <h4>智能体 / 交易所对接状态</h4>
+                    <div className="summary-grid">
+                      <article className="metric-card">
+                        <h4>交易所状态</h4>
+                        <p>{systemRuntime?.integration?.exchange?.ready ? '已连接' : '未连接'}</p>
+                      </article>
+                      <article className="metric-card">
+                        <h4>当前交易所ID</h4>
+                        <p>{systemRuntime?.integration?.exchange?.active_exchange_id || '-'}</p>
+                      </article>
+                      <article className="metric-card">
+                        <h4>智能体状态</h4>
+                        <p>{systemRuntime?.integration?.agent?.configured ? '已配置' : '未配置'}</p>
+                      </article>
+                      <article className="metric-card">
+                        <h4>模型</h4>
+                        <p>{systemRuntime?.integration?.agent?.model || '-'}</p>
+                      </article>
+                      <article className="metric-card">
+                        <h4>Token 总消耗</h4>
+                        <p>{systemRuntime?.integration?.agent?.token_usage?.total_tokens ?? 0}</p>
+                      </article>
+                      <article className="metric-card">
+                        <h4>Token 请求数</h4>
+                        <p>{systemRuntime?.integration?.agent?.token_usage?.requests ?? 0}</p>
+                      </article>
+                    </div>
+                    <div className="table-wrap">
+                      <table className="centered-list-table">
+                        <thead>
+                          <tr>
+                            <th>场景</th>
+                            <th>请求数</th>
+                            <th>输入Token</th>
+                            <th>输出Token</th>
+                            <th>总Token</th>
+                            <th>最近使用</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(systemRuntime?.integration?.agent?.token_usage?.by_channel || {}).map(([k, v]) => (
+                            <tr key={`token-${k}`}>
+                              <td>{k}</td>
+                              <td>{v?.requests ?? 0}</td>
+                              <td>{v?.prompt_tokens ?? 0}</td>
+                              <td>{v?.completion_tokens ?? 0}</td>
+                              <td>{v?.total_tokens ?? 0}</td>
+                              <td>{fmtTime(v?.last_used_at)}</td>
+                            </tr>
+                          ))}
+                          {!Object.keys(systemRuntime?.integration?.agent?.token_usage?.by_channel || {}).length ? (
+                            <tr><td colSpan="6" className="muted">暂无 token 使用数据</td></tr>
+                          ) : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              )}
 
               {systemSubTab === 'env' && (
                 <div className="builder-pane">
@@ -2164,7 +2861,16 @@ export default function App() {
               {systemSubTab === 'llm' && (
                 <div className="builder-pane">
                   <div className="actions-row end">
-                    <button className="primary" onClick={() => setShowLLMModal(true)}>添加 LLM 模型</button>
+                    <button
+                      className="primary"
+                      onClick={() => {
+                        setEditingLLMId('')
+                        setNewLLM({ name: '', base_url: '', api_key: '', model: '' })
+                        setShowLLMModal(true)
+                      }}
+                    >
+                      添加智能体参数
+                    </button>
                   </div>
                   <div className="table-wrap">
                     <table className="centered-list-table">
@@ -2174,19 +2880,60 @@ export default function App() {
                           <th>名称</th>
                           <th>Base URL</th>
                           <th>模型</th>
+                          <th>状态</th>
+                          <th>操作</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {llmConfigs.map((x) => (
-                          <tr key={x.id}>
-                            <td>{x.id}</td>
-                            <td>{x.name}</td>
-                            <td>{x.base_url}</td>
-                            <td>{x.model}</td>
-                          </tr>
-                        ))}
+                        {llmConfigs.map((x) => {
+                          const id = String(x.id || '')
+                          const isTesting = testingLLMId === id
+                          const rowStatus = llmStatusMap[id] || { state: 'unknown', message: '未检测' }
+                          const statusState = isTesting ? 'testing' : String(rowStatus.state || 'unknown')
+                          const statusText = isTesting
+                            ? '检测中'
+                            : statusState === 'reachable'
+                              ? '可达'
+                              : statusState === 'unreachable'
+                                ? '不可达'
+                                : '未检测'
+                          const statusTitle = String(rowStatus.message || statusText)
+                          return (
+                            <tr key={x.id}>
+                              <td>{x.id}</td>
+                              <td>{x.name}</td>
+                              <td>{x.base_url}</td>
+                              <td>{x.model}</td>
+                              <td>
+                                <span className={`llm-status-badge is-${statusState}`} title={statusTitle}>
+                                  {statusText}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="inline-actions">
+                                  <button
+                                    type="button"
+                                    disabled={isTesting}
+                                    onClick={() => testLLMConfigReachability(x.id)}
+                                  >
+                                    {isTesting ? '测试中...' : '测试'}
+                                  </button>
+                                  <button type="button" onClick={() => openEditLLMModal(x)}>编辑</button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    disabled={deletingLLMId === String(x.id)}
+                                    onClick={() => removeLLMConfig(x.id)}
+                                  >
+                                    {deletingLLMId === String(x.id) ? '删除中...' : '删除'}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
                         {!llmConfigs.length ? (
-                          <tr><td colSpan="4" className="muted">暂无 LLM 参数</td></tr>
+                          <tr><td colSpan="6" className="muted">暂无智能体参数</td></tr>
                         ) : null}
                       </tbody>
                     </table>
@@ -2199,6 +2946,14 @@ export default function App() {
                   <div className="actions-row end">
                     <button className="primary" onClick={() => setShowExchangeModal(true)}>添加交易所参数</button>
                   </div>
+                  <section className={`sub-window exchange-bind-status ${exchangeBound ? 'is-bound' : 'is-unbound'}`}>
+                    <h4>账号绑定状态</h4>
+                    {exchangeBound ? (
+                      <p>已绑定交易账号，当前 ID：{activeExchangeId || '-'}</p>
+                    ) : (
+                      <p>未绑定交易账号，请在下方列表中选择一个账号进行绑定。</p>
+                    )}
+                  </section>
                   <div className="table-wrap">
                     <table className="centered-list-table">
                       <thead>
@@ -2206,18 +2961,41 @@ export default function App() {
                           <th>ID</th>
                           <th>交易所</th>
                           <th>API Key</th>
+                          <th>状态</th>
+                          <th>操作</th>
                         </tr>
                       </thead>
                       <tbody>
                         {exchangeConfigs.map((x) => (
-                          <tr key={x.id}>
+                          <tr key={x.id} className={String(x.id) === activeExchangeId ? 'exchange-row-active' : ''}>
                             <td>{x.id}</td>
                             <td>{x.exchange}</td>
                             <td>{x.api_key ? `${String(x.api_key).slice(0, 6)}***` : '-'}</td>
+                            <td>{String(x.id) === activeExchangeId ? '已绑定' : '未绑定'}</td>
+                            <td>
+                              <div className="inline-actions">
+                                <button
+                                  type="button"
+                                  className="primary"
+                                  disabled={String(x.id) === activeExchangeId || activatingExchangeId === String(x.id)}
+                                  onClick={() => bindExchangeAccount(x.id)}
+                                >
+                                  {activatingExchangeId === String(x.id) ? '绑定中...' : '绑定此账号'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger"
+                                  disabled={deletingExchangeId === String(x.id)}
+                                  onClick={() => removeExchangeAccount(x.id)}
+                                >
+                                  {deletingExchangeId === String(x.id) ? '删除中...' : '删除'}
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         ))}
                         {!exchangeConfigs.length ? (
-                          <tr><td colSpan="3" className="muted">暂无交易所参数</td></tr>
+                          <tr><td colSpan="5" className="muted">暂无交易所参数</td></tr>
                         ) : null}
                       </tbody>
                     </table>
@@ -2279,10 +3057,17 @@ export default function App() {
       </main>
       </div>
       {showLLMModal ? (
-        <div className="modal-mask" onClick={() => setShowLLMModal(false)}>
+        <div
+          className="modal-mask"
+          onClick={() => {
+            setShowLLMModal(false)
+            setEditingLLMId('')
+            setNewLLM({ name: '', base_url: '', api_key: '', model: '' })
+          }}
+        >
           <section className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <h3>添加 LLM 模型</h3>
-            <p className="muted">ID 将自动按 1,2,3... 递增分配。</p>
+            <h3>{editingLLMId ? `编辑智能体参数 #${editingLLMId}` : '添加智能体参数'}</h3>
+            <p className="muted">{editingLLMId ? '修改后将重新校验连通性。' : 'ID 将自动按 1,2,3... 递增分配。'}</p>
             <div className="form-grid modal-form">
               <label><span>名称</span><input value={newLLM.name} onChange={(e) => setNewLLM((v) => ({ ...v, name: e.target.value }))} /></label>
               <label><span>Base URL</span><input value={newLLM.base_url} onChange={(e) => setNewLLM((v) => ({ ...v, base_url: e.target.value }))} /></label>
@@ -2290,13 +3075,21 @@ export default function App() {
               <label><span>模型</span><input value={newLLM.model} onChange={(e) => setNewLLM((v) => ({ ...v, model: e.target.value }))} /></label>
             </div>
             <div className="actions-row end">
-              <button onClick={() => setShowLLMModal(false)}>取消</button>
+              <button
+                onClick={() => {
+                  setShowLLMModal(false)
+                  setEditingLLMId('')
+                  setNewLLM({ name: '', base_url: '', api_key: '', model: '' })
+                }}
+              >
+                取消
+              </button>
               <button
                 onClick={handleAddLLM}
                 disabled={addingLLM}
                 className={`primary save-config-btn ${addingLLM ? 'is-saving' : ''}`}
               >
-                {addingLLM ? '校验中...' : '确认添加'}
+                {addingLLM ? (editingLLMId ? '更新中...' : '校验中...') : (editingLLMId ? '确认更新' : '确认添加')}
               </button>
             </div>
           </section>

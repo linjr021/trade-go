@@ -229,13 +229,22 @@ func generatePreferenceByLLM(
 	defer resp.Body.Close()
 	rawResp, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI响应异常，回退模板生成", tradeCfg), true
+		reason := fmt.Sprintf("AI响应异常(HTTP %d)", resp.StatusCode)
+		bodyText := strings.TrimSpace(string(rawResp))
+		if bodyText != "" {
+			if len(bodyText) > 180 {
+				bodyText = bodyText[:180] + "..."
+			}
+			reason += ": " + bodyText
+		}
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason+"，回退模板生成", tradeCfg), true
 	}
 	var chat llmChatResponse
 	if err := json.Unmarshal(rawResp, &chat); err != nil || len(chat.Choices) == 0 {
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI解析失败，回退模板生成", tradeCfg), true
 	}
 	content := chat.Choices[0].Message.Content
+	recordLLMUsage("strategy_generator", mustJSON(prompt), content)
 	obj, ok := extractJSONObject(content)
 	if !ok {
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI未输出JSON，回退模板生成", tradeCfg), true

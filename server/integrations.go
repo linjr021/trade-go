@@ -37,15 +37,22 @@ type exchangeIntegration struct {
 }
 
 type integrationStore struct {
-	LLMs      []llmIntegration      `json:"llms"`
-	Exchanges []exchangeIntegration `json:"exchanges"`
+	LLMs             []llmIntegration      `json:"llms"`
+	Exchanges        []exchangeIntegration `json:"exchanges"`
+	ActiveExchangeID string                `json:"active_exchange_id"`
 }
 
 func (s *Service) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg, _ := readIntegrations()
-		writeJSON(w, 200, cfg)
+		active := findExchangeByID(cfg.Exchanges, cfg.ActiveExchangeID)
+		writeJSON(w, 200, map[string]any{
+			"llms":               cfg.LLMs,
+			"exchanges":          cfg.Exchanges,
+			"active_exchange_id": cfg.ActiveExchangeID,
+			"exchange_bound":     active != nil,
+		})
 	default:
 		writeError(w, 405, "method not allowed")
 	}
@@ -83,6 +90,136 @@ func (s *Service) handleAddLLMIntegration(w http.ResponseWriter, r *http.Request
 	writeJSON(w, 200, map[string]any{"added": req, "llms": store.LLMs})
 }
 
+func (s *Service) handleUpdateLLMIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req llmIntegration
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	req.Name = strings.TrimSpace(req.Name)
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.Model = strings.TrimSpace(req.Model)
+	if req.ID == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+	if req.Name == "" || req.BaseURL == "" || req.APIKey == "" || req.Model == "" {
+		writeError(w, 400, "name/base_url/api_key/model 必填")
+		return
+	}
+	if err := validateLLMIntegration(req); err != nil {
+		writeError(w, 400, "LLM 验证失败: "+err.Error())
+		return
+	}
+
+	store, _ := readIntegrations()
+	if findLLMByID(store.LLMs, req.ID) == nil {
+		writeError(w, 404, "未找到指定智能体参数")
+		return
+	}
+	next := make([]llmIntegration, 0, len(store.LLMs))
+	for _, x := range store.LLMs {
+		if strings.TrimSpace(x.ID) == req.ID {
+			next = append(next, req)
+		} else {
+			next = append(next, x)
+		}
+	}
+	store.LLMs = next
+	if err := writeIntegrations(store); err != nil {
+		writeError(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"updated": req, "llms": store.LLMs})
+}
+
+func (s *Service) handleDeleteLLMIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+
+	store, _ := readIntegrations()
+	if findLLMByID(store.LLMs, id) == nil {
+		writeError(w, 404, "未找到指定智能体参数")
+		return
+	}
+	store.LLMs = filterLLMByID(store.LLMs, id)
+	if err := writeIntegrations(store); err != nil {
+		writeError(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"message":    "智能体参数已删除",
+		"deleted_id": id,
+		"llms":       store.LLMs,
+	})
+}
+
+func (s *Service) handleTestLLMIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+
+	store, err := readIntegrations()
+	if err != nil {
+		writeError(w, 500, "读取配置失败: "+err.Error())
+		return
+	}
+	cfg := findLLMByID(store.LLMs, id)
+	if cfg == nil {
+		writeError(w, 404, "未找到指定智能体参数")
+		return
+	}
+
+	if err := validateLLMIntegration(*cfg); err != nil {
+		writeJSON(w, 200, map[string]any{
+			"id":        id,
+			"reachable": false,
+			"status":    "unreachable",
+			"message":   err.Error(),
+		})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"id":        id,
+		"reachable": true,
+		"status":    "reachable",
+		"message":   "API 可达",
+	})
+}
+
 func (s *Service) handleAddExchangeIntegration(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "method not allowed")
@@ -116,11 +253,132 @@ func (s *Service) handleAddExchangeIntegration(w http.ResponseWriter, r *http.Re
 	store, _ := readIntegrations()
 	req.ID = nextIntegrationIDExchange(store.Exchanges)
 	store.Exchanges = append(filterExchangeByID(store.Exchanges, req.ID), req)
+	if strings.TrimSpace(store.ActiveExchangeID) == "" {
+		store.ActiveExchangeID = req.ID
+		if err := bindExchangeAccount(s, req); err != nil {
+			writeError(w, 500, "绑定失败: "+err.Error())
+			return
+		}
+	}
 	if err := writeIntegrations(store); err != nil {
 		writeError(w, 500, "保存失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"added": req, "exchanges": store.Exchanges})
+	active := findExchangeByID(store.Exchanges, store.ActiveExchangeID)
+	writeJSON(w, 200, map[string]any{
+		"added":              req,
+		"exchanges":          store.Exchanges,
+		"active_exchange_id": store.ActiveExchangeID,
+		"exchange_bound":     active != nil,
+	})
+}
+
+func (s *Service) handleActivateExchangeIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+
+	store, err := readIntegrations()
+	if err != nil {
+		writeError(w, 500, "读取配置失败: "+err.Error())
+		return
+	}
+	cfg := findExchangeByID(store.Exchanges, id)
+	if cfg == nil {
+		writeError(w, 404, "未找到指定交易所账号")
+		return
+	}
+
+	if err := validateExchangeIntegration(*cfg); err != nil {
+		writeError(w, 400, "交易所验证失败: "+err.Error())
+		return
+	}
+	if err := bindExchangeAccount(s, *cfg); err != nil {
+		writeError(w, 500, "绑定失败: "+err.Error())
+		return
+	}
+
+	store.ActiveExchangeID = cfg.ID
+	if err := writeIntegrations(store); err != nil {
+		writeError(w, 500, "保存失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"message":            "交易账号绑定成功",
+		"active_exchange_id": store.ActiveExchangeID,
+		"exchange_bound":     true,
+		"active_exchange": map[string]any{
+			"id":       cfg.ID,
+			"exchange": cfg.Exchange,
+			"api_key":  maskKey(cfg.APIKey),
+		},
+	})
+}
+
+func (s *Service) handleDeleteExchangeIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+
+	store, err := readIntegrations()
+	if err != nil {
+		writeError(w, 500, "读取配置失败: "+err.Error())
+		return
+	}
+	target := findExchangeByID(store.Exchanges, id)
+	if target == nil {
+		writeError(w, 404, "未找到指定交易所账号")
+		return
+	}
+
+	store.Exchanges = filterExchangeByID(store.Exchanges, id)
+	wasActive := store.ActiveExchangeID == id
+	if wasActive {
+		store.ActiveExchangeID = ""
+		if err := unbindExchangeAccount(s); err != nil {
+			writeError(w, 500, "解绑失败: "+err.Error())
+			return
+		}
+	}
+	if err := writeIntegrations(store); err != nil {
+		writeError(w, 500, "保存失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"message":            "交易所账号已删除",
+		"deleted_id":         id,
+		"exchanges":          store.Exchanges,
+		"active_exchange_id": store.ActiveExchangeID,
+		"exchange_bound":     strings.TrimSpace(store.ActiveExchangeID) != "",
+	})
 }
 
 func filterLLMByID(in []llmIntegration, id string) []llmIntegration {
@@ -133,6 +391,15 @@ func filterLLMByID(in []llmIntegration, id string) []llmIntegration {
 	return out
 }
 
+func findLLMByID(in []llmIntegration, id string) *llmIntegration {
+	for i := range in {
+		if strings.TrimSpace(in[i].ID) == strings.TrimSpace(id) {
+			return &in[i]
+		}
+	}
+	return nil
+}
+
 func filterExchangeByID(in []exchangeIntegration, id string) []exchangeIntegration {
 	out := make([]exchangeIntegration, 0, len(in))
 	for _, x := range in {
@@ -143,8 +410,29 @@ func filterExchangeByID(in []exchangeIntegration, id string) []exchangeIntegrati
 	return out
 }
 
+func findExchangeByID(in []exchangeIntegration, id string) *exchangeIntegration {
+	for i := range in {
+		if strings.TrimSpace(in[i].ID) == strings.TrimSpace(id) {
+			return &in[i]
+		}
+	}
+	return nil
+}
+
+func maskKey(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 8 {
+		return s[:2] + "***"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
+}
+
 func validateLLMIntegration(cfg llmIntegration) error {
-	u, err := url.Parse(cfg.BaseURL)
+	endpoint := strings.TrimSpace(cfg.BaseURL)
+	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("base_url 非法")
 	}
@@ -158,7 +446,7 @@ func validateLLMIntegration(cfg llmIntegration) error {
 		"stream":      false,
 	}
 	raw, _ := json.Marshal(body)
-	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL, bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -215,14 +503,61 @@ func validateExchangeIntegration(cfg exchangeIntegration) error {
 
 func readIntegrations() (integrationStore, error) {
 	var cfg integrationStore
+	fileMissing := false
 	raw, err := os.ReadFile(integrationsPath)
-	if err != nil {
-		return cfg, err
+	if err == nil {
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			// Keep behavior robust: fallback to env snapshot when file is malformed.
+			cfg = integrationStore{}
+		}
+	} else if os.IsNotExist(err) {
+		fileMissing = true
+	} else {
+		// Keep endpoint available even when file read fails for transient reasons.
+		cfg = integrationStore{}
 	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return cfg, err
+
+	// Only bootstrap from env when local integration file does not exist yet.
+	if fileMissing {
+		mergeIntegrationsFromEnv(&cfg)
 	}
 	return cfg, nil
+}
+
+func mergeIntegrationsFromEnv(cfg *integrationStore) {
+	if cfg == nil {
+		return
+	}
+	if len(cfg.LLMs) == 0 {
+		baseURL := strings.TrimSpace(os.Getenv("AI_BASE_URL"))
+		apiKey := strings.TrimSpace(os.Getenv("AI_API_KEY"))
+		model := strings.TrimSpace(os.Getenv("AI_MODEL"))
+		if baseURL != "" || apiKey != "" || model != "" {
+			cfg.LLMs = append(cfg.LLMs, llmIntegration{
+				ID:      "1",
+				Name:    "ENV 智能体",
+				BaseURL: baseURL,
+				APIKey:  apiKey,
+				Model:   model,
+			})
+		}
+	}
+	if len(cfg.Exchanges) == 0 {
+		apiKey := strings.TrimSpace(os.Getenv("BINANCE_API_KEY"))
+		secret := strings.TrimSpace(os.Getenv("BINANCE_SECRET"))
+		if apiKey != "" || secret != "" {
+			cfg.Exchanges = append(cfg.Exchanges, exchangeIntegration{
+				ID:       "1",
+				Name:     "ENV Binance",
+				Exchange: "binance",
+				APIKey:   apiKey,
+				Secret:   secret,
+			})
+		}
+	}
+	if strings.TrimSpace(cfg.ActiveExchangeID) == "" && len(cfg.Exchanges) > 0 {
+		cfg.ActiveExchangeID = strings.TrimSpace(cfg.Exchanges[0].ID)
+	}
 }
 
 func writeIntegrations(cfg integrationStore) error {
@@ -257,4 +592,34 @@ func nextIntegrationIDExchange(items []exchangeIntegration) string {
 		}
 	}
 	return strconv.Itoa(maxID + 1)
+}
+
+func bindExchangeAccount(s *Service, cfg exchangeIntegration) error {
+	updates := map[string]string{
+		"BINANCE_API_KEY": strings.TrimSpace(cfg.APIKey),
+		"BINANCE_SECRET":  strings.TrimSpace(cfg.Secret),
+	}
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return err
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	applyRuntimeConfigFromEnv()
+	return s.bot.ReloadClients()
+}
+
+func unbindExchangeAccount(s *Service) error {
+	updates := map[string]string{
+		"BINANCE_API_KEY": "",
+		"BINANCE_SECRET":  "",
+	}
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return err
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	applyRuntimeConfigFromEnv()
+	return s.bot.ReloadClients()
 }

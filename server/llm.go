@@ -117,13 +117,14 @@ func (s *Service) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content := chat.Choices[0].Message.Content
+	recordLLMUsage("chat_assistant", prompt, content)
 	obj, ok := extractJSONObject(content)
 	if !ok {
 		writeError(w, http.StatusBadGateway, "LLM 未返回可解析JSON")
 		return
 	}
 	var out struct {
-		Reply        string         `json:"reply"`
+		Reply         string         `json:"reply"`
 		SettingsPatch map[string]any `json:"settings_patch"`
 	}
 	if err := json.Unmarshal([]byte(obj), &out); err != nil {
@@ -208,4 +209,3 @@ func tradeConfigMap(cfg config.TradeConfig) map[string]any {
 		"liquidation_buffer_pct":     cfg.LiquidationBufferPct,
 	}
 }
-

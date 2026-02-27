@@ -91,7 +91,10 @@ func (s *Service) handleSaveSystemSettings(w http.ResponseWriter, r *http.Reques
 		_ = os.Setenv(k, v)
 	}
 	applyRuntimeConfigFromEnv()
-	s.bot.ReloadClients()
+	if err := s.bot.ReloadClients(); err != nil {
+		writeError(w, 500, "重载交易所/智能体客户端失败: "+err.Error())
+		return
+	}
 
 	out := map[string]string{}
 	for _, k := range editableEnvKeys {

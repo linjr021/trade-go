@@ -67,11 +67,23 @@ func (b *Bot) SetStore(s *storage.Store) {
 	b.store = s
 }
 
-func (b *Bot) ReloadClients() {
+func (b *Bot) HasStore() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.store != nil
+}
+
+func (b *Bot) ReloadClients() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("reload clients panic: %v", r)
+		}
+	}()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.exchange = exchange.NewClient()
 	b.aiClient = ai.NewClient()
+	return nil
 }
 
 // Setup 初始化交易所设置

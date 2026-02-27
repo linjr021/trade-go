@@ -63,6 +63,14 @@ body {
 
 .content-head {
   margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.content-head-left {
+  min-width: 0;
 }
 
 .content-head h1 {
@@ -74,6 +82,25 @@ body {
   margin: 6px 0 0;
   font-size: 13px;
   color: #5f7388;
+}
+
+.theme-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d7e1ea;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.theme-switcher span {
+  font-size: 12px;
+  color: #5f7388;
+}
+
+.theme-switcher select {
+  min-width: 118px;
 }
 
 .stack {
@@ -485,6 +512,25 @@ button:disabled {
   border-radius: 12px;
 }
 
+.tv-widget-shell {
+  width: 100%;
+  height: 680px;
+  border: 1px solid #dbe3ec;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.tv-widget-shell .tradingview-widget-container {
+  width: 100%;
+  height: 100%;
+}
+
+.tv-widget-shell .tradingview-widget-container__widget {
+  width: 100%;
+  height: 100%;
+}
+
 .env-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -566,6 +612,28 @@ button:disabled {
   margin-top: 8px;
 }
 
+.strategy-gen-hint {
+  margin-top: 4px;
+  margin-bottom: 10px;
+  border: 1px solid;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.strategy-gen-hint.llm {
+  border-color: #b7dfc4;
+  background: #edf9f1;
+  color: #1d6c37;
+}
+
+.strategy-gen-hint.fallback {
+  border-color: #f1c7da;
+  background: #fff0f6;
+  color: #9a2f63;
+}
+
 .rule-tags {
   display: flex;
   gap: 8px;
@@ -633,8 +701,258 @@ td {
   font-size: 12px;
 }
 
+.llm-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d7e1ea;
+  background: #f4f8fc;
+  color: #5f7388;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.llm-status-badge.is-reachable {
+  border-color: #b8dfc7;
+  background: #edf9f1;
+  color: #1f7a48;
+}
+
+.llm-status-badge.is-unreachable {
+  border-color: #f0d8b0;
+  background: #fff7ed;
+  color: #b45309;
+}
+
+.llm-status-badge.is-testing {
+  border-color: #c8daf8;
+  background: #eef4ff;
+  color: #2f5ea8;
+}
+
 .history-row.active td {
   background: #ecf3ff;
+}
+
+.exchange-bind-status {
+  margin-top: 6px;
+}
+
+.exchange-bind-status p {
+  margin: 0;
+}
+
+.exchange-bind-status.is-bound {
+  border-color: #b8dfc7;
+  background: #f3fbf6;
+}
+
+.exchange-bind-status.is-unbound {
+  border-color: #f0d8b0;
+  background: #fffaf0;
+}
+
+.exchange-row-active td {
+  background: #ecf3ff;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.status-chip {
+  border: 1px solid #d8e1ea;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafd;
+}
+
+.status-chip-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #27405a;
+  margin-bottom: 4px;
+}
+
+.status-chip-text {
+  font-size: 12px;
+  color: #5f7388;
+}
+
+.status-running,
+.status-connected,
+.status-configured {
+  border-color: #b8dfc7;
+  background: #edf9f1;
+}
+
+.status-warning,
+.status-unconfigured,
+.status-disabled,
+.status-stopped {
+  border-color: #f1d8af;
+  background: #fffaf0;
+}
+
+[data-theme='dark'] body {
+  background: #0d141b;
+  color: #d6e0ea;
+}
+
+[data-theme='dark'] .sidebar {
+  background: #0b1117;
+  border-right-color: #1c2732;
+}
+
+[data-theme='dark'] .dir-item {
+  background: #111b25;
+  border-color: #273646;
+  color: #d3deea;
+}
+
+[data-theme='dark'] .dir-item.active {
+  background: #2b6cd0;
+  border-color: #4282e1;
+}
+
+[data-theme='dark'] .content-head p,
+[data-theme='dark'] .theme-switcher span {
+  color: #9fb0c2;
+}
+
+[data-theme='dark'] .theme-switcher {
+  background: #111a24;
+  border-color: #263545;
+}
+
+[data-theme='dark'] .card,
+[data-theme='dark'] .sub-window,
+[data-theme='dark'] .metric-card,
+[data-theme='dark'] .rule-detail,
+[data-theme='dark'] .env-group-card,
+[data-theme='dark'] .template-block {
+  background: #121d28;
+  border-color: #273545;
+  color: #d7e1ec;
+}
+
+[data-theme='dark'] input,
+[data-theme='dark'] select,
+[data-theme='dark'] textarea {
+  background: #0f1822;
+  border-color: #2b3a4a;
+  color: #dbe5ef;
+}
+
+[data-theme='dark'] .strategy-picker-trigger {
+  background: #0f1822;
+  border-color: #2b3a4a;
+  color: #dbe5ef;
+}
+
+[data-theme='dark'] .strategy-picker-menu {
+  background: #111c28;
+  border-color: #2b3a4a;
+  box-shadow: 0 10px 24px rgba(6, 12, 20, 0.42);
+}
+
+[data-theme='dark'] .strategy-picker-item {
+  color: #dbe5ef;
+}
+
+[data-theme='dark'] .strategy-picker-item input {
+  accent-color: #4d8ef1;
+}
+
+[data-theme='dark'] .tab {
+  background: #16222f;
+  border-color: #304357;
+  color: #c5d2df;
+}
+
+[data-theme='dark'] .tab.active {
+  background: #2b6cd0;
+  border-color: #4282e1;
+  color: #ffffff;
+}
+
+[data-theme='dark'] th {
+  background: #152230;
+  color: #9fb2c5;
+}
+
+[data-theme='dark'] td {
+  border-top-color: #243344;
+}
+
+[data-theme='dark'] .muted,
+[data-theme='dark'] label span,
+[data-theme='dark'] .status-chip-text {
+  color: #9eb0c2;
+}
+
+[data-theme='dark'] .llm-status-badge {
+  border-color: #304152;
+  background: #152230;
+  color: #a9bdd2;
+}
+
+[data-theme='dark'] .llm-status-badge.is-reachable {
+  border-color: #2e6d49;
+  background: #133224;
+  color: #8fd2a9;
+}
+
+[data-theme='dark'] .llm-status-badge.is-unreachable {
+  border-color: #7f5032;
+  background: #2f1f16;
+  color: #f2bf9d;
+}
+
+[data-theme='dark'] .llm-status-badge.is-testing {
+  border-color: #315286;
+  background: #142640;
+  color: #9dc0f6;
+}
+
+[data-theme='dark'] .tv-widget-shell {
+  border-color: #2a3b4d;
+  background: #0e1823;
+}
+
+[data-theme='dark'] .kline-svg {
+  border-color: #2a3b4d;
+}
+
+[data-theme='dark'] .kline-svg rect {
+  fill: #0e1823;
+}
+
+[data-theme='dark'] .kline-svg path {
+  stroke: #6ea8ff;
+}
+
+[data-theme='dark'] .calendar-head {
+  color: #9fb2c5;
+}
+
+[data-theme='dark'] .calendar-cell {
+  background: #0f1a25;
+  border-color: #2b3a4a;
+}
+
+[data-theme='dark'] .calendar-cell.empty {
+  background: #121f2c;
+  border-color: #304152;
+}
+
+[data-theme='dark'] .calendar-day {
+  color: #c7d5e4;
 }
 
 th {
@@ -867,5 +1185,22 @@ th {
 
   .date-range-sep {
     display: none;
+  }
+
+  .tv-widget-shell {
+    height: 500px;
+  }
+
+  .content-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .theme-switcher {
+    width: fit-content;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr;
   }
 }
