@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"trade-go/config"
+	"trade-go/llmapi"
 	"trade-go/trader"
 )
 
@@ -91,8 +92,13 @@ func (s *Service) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		"temperature": 0.1,
 		"stream":      false,
 	}
+	endpoint, err := llmapi.ResolveChatEndpoint(baseURL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "AI_BASE_URL 配置错误: "+err.Error())
+		return
+	}
 	rawReq, _ := json.Marshal(body)
-	httpReq, err := http.NewRequest(http.MethodPost, baseURL, bytes.NewReader(rawReq))
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(rawReq))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

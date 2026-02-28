@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"trade-go/config"
+	"trade-go/llmapi"
 	"trade-go/models"
 )
 
@@ -92,9 +93,13 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 		Temperature: 0.1,
 		Stream:      false,
 	}
+	endpoint, err := llmapi.ResolveChatEndpoint(c.aiBaseURL)
+	if err != nil {
+		return fallbackSignal(priceData), nil
+	}
 
 	b, _ := json.Marshal(reqBody)
-	req, err := http.NewRequest("POST", c.aiBaseURL, bytes.NewReader(b))
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(b))
 	if err != nil {
 		return models.TradeSignal{}, err
 	}

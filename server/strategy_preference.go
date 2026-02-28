@@ -11,6 +11,7 @@ import (
 	"trade-go/config"
 	"trade-go/exchange"
 	"trade-go/indicators"
+	"trade-go/llmapi"
 )
 
 type generatePreferenceRequest struct {
@@ -214,8 +215,12 @@ func generatePreferenceByLLM(
 		"temperature": 0.2,
 		"stream":      false,
 	}
+	endpoint, err := llmapi.ResolveChatEndpoint(baseURL)
+	if err != nil {
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI_BASE_URL配置错误，回退模板生成", tradeCfg), true
+	}
 	rawReq, _ := json.Marshal(body)
-	httpReq, err := http.NewRequest(http.MethodPost, baseURL, bytes.NewReader(rawReq))
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(rawReq))
 	if err != nil {
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "请求构建失败，回退模板生成", tradeCfg), true
 	}

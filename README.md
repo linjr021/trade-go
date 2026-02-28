@@ -6,7 +6,10 @@
 
 - 前端：
   - React 19
+  - TypeScript
   - Vite 6
+  - TailwindCSS
+  - shadcn/ui（Radix UI + CVA）
   - Axios
 - 后端：
   - Go 1.21
@@ -85,12 +88,14 @@ MODE=web go run .
 HTTP_ADDR=:9090 MODE=web go run .
 ```
 
-### 5. 启动前端（React 19 + Vite）
+### 5. 启动前端（React 19 + TypeScript + Tailwind + shadcn/ui）
 
 ```bash
 cd frontend
 npm install
 npm run dev
+# 可选：类型检查
+npm run typecheck
 ```
 
 默认前端地址：`http://127.0.0.1:5173`，已代理 `/api` 到 `http://127.0.0.1:8080`。

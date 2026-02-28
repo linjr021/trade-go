@@ -42,9 +42,12 @@ type backtestRecord struct {
 	TS         int64   `json:"ts"`
 	Side       string  `json:"side"`
 	Confidence string  `json:"confidence"`
+	OrderBasis string  `json:"order_basis"`
 	Size       float64 `json:"size"`
 	Leverage   int     `json:"leverage"`
 	Entry      float64 `json:"entry"`
+	StopLoss   float64 `json:"stop_loss"`
+	TakeProfit float64 `json:"take_profit"`
 	Exit       float64 `json:"exit"`
 	PnL        float64 `json:"pnl"`
 }
@@ -196,6 +199,32 @@ func (s *Service) handleBacktest(w http.ResponseWriter, r *http.Request) {
 		if size > maxSize {
 			size = maxSize
 		}
+		atr := math.Max(cur.High-cur.Low, cur.Close*0.001)
+		slMult := 1.1
+		tpMult := 1.9
+		if confidence == "HIGH" {
+			slMult = 1.3
+			tpMult = 2.4
+		}
+		stopLoss := cur.Close
+		takeProfit := cur.Close
+		if side == "BUY" {
+			stopLoss = cur.Close - atr*slMult
+			takeProfit = cur.Close + atr*tpMult
+		} else {
+			stopLoss = cur.Close + atr*slMult
+			takeProfit = cur.Close - atr*tpMult
+		}
+		if stopLoss < 0 {
+			stopLoss = 0
+		}
+		if takeProfit < 0 {
+			takeProfit = 0
+		}
+		orderBasis := fmt.Sprintf(
+			"趋势判定=%s（当前收盘%.4f vs 前一根%.4f），动量=%.2f%%，信心=%s，仓位模式=%s，杠杆=%dx",
+			side, cur.Close, prev.Close, movePct, confidence, sizingMode, leverage,
+		)
 
 		pnl := 0.0
 		if size > 0 {
@@ -217,9 +246,12 @@ func (s *Service) handleBacktest(w http.ResponseWriter, r *http.Request) {
 			TS:         cur.TS,
 			Side:       side,
 			Confidence: confidence,
+			OrderBasis: orderBasis,
 			Size:       round(size, 8),
 			Leverage:   leverage,
 			Entry:      round(cur.Close, 6),
+			StopLoss:   round(stopLoss, 6),
+			TakeProfit: round(takeProfit, 6),
 			Exit:       round(nxt.Close, 6),
 			PnL:        round(pnl, 6),
 		})
@@ -274,9 +306,12 @@ func (s *Service) handleBacktest(w http.ResponseWriter, r *http.Request) {
 			TS:         r.TS,
 			Side:       r.Side,
 			Confidence: r.Confidence,
+			OrderBasis: r.OrderBasis,
 			Size:       r.Size,
 			Leverage:   r.Leverage,
 			Entry:      r.Entry,
+			StopLoss:   r.StopLoss,
+			TakeProfit: r.TakeProfit,
 			Exit:       r.Exit,
 			PnL:        r.PnL,
 		})

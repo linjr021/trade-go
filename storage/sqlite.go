@@ -101,9 +101,12 @@ type BacktestRunRecord struct {
 	TS         int64   `json:"ts"`
 	Side       string  `json:"side"`
 	Confidence string  `json:"confidence"`
+	OrderBasis string  `json:"order_basis"`
 	Size       float64 `json:"size"`
 	Leverage   int     `json:"leverage"`
 	Entry      float64 `json:"entry"`
+	StopLoss   float64 `json:"stop_loss"`
+	TakeProfit float64 `json:"take_profit"`
 	Exit       float64 `json:"exit"`
 	PnL        float64 `json:"pnl"`
 }
@@ -261,9 +264,12 @@ func (s *Store) migrate() error {
 			ts INTEGER,
 			side TEXT,
 			confidence TEXT,
+			order_basis TEXT,
 			size REAL,
 			leverage INTEGER,
 			entry REAL,
+			stop_loss REAL,
+			take_profit REAL,
 			exit REAL,
 			pnl REAL
 		);`,
@@ -294,6 +300,9 @@ func (s *Store) migrateCompat() error {
 	alterStmts := []string{
 		`ALTER TABLE ai_decisions ADD COLUMN strategy_combo TEXT;`,
 		`ALTER TABLE ai_decisions ADD COLUMN strategy_score REAL;`,
+		`ALTER TABLE backtest_run_records ADD COLUMN order_basis TEXT;`,
+		`ALTER TABLE backtest_run_records ADD COLUMN stop_loss REAL;`,
+		`ALTER TABLE backtest_run_records ADD COLUMN take_profit REAL;`,
 	}
 	for _, stmt := range alterStmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -819,8 +828,8 @@ func (s *Store) SaveBacktestRun(run BacktestRun, records []BacktestRunRecord) (i
 
 	stmt, err := tx.Prepare(
 		`INSERT INTO backtest_run_records (
-			run_id, seq, ts, side, confidence, size, leverage, entry, exit, pnl
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			run_id, seq, ts, side, confidence, order_basis, size, leverage, entry, stop_loss, take_profit, exit, pnl
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return 0, err
@@ -829,7 +838,7 @@ func (s *Store) SaveBacktestRun(run BacktestRun, records []BacktestRunRecord) (i
 
 	for i, r := range records {
 		if _, err := stmt.Exec(
-			runID, i+1, r.TS, r.Side, r.Confidence, r.Size, r.Leverage, r.Entry, r.Exit, r.PnL,
+			runID, i+1, r.TS, r.Side, r.Confidence, r.OrderBasis, r.Size, r.Leverage, r.Entry, r.StopLoss, r.TakeProfit, r.Exit, r.PnL,
 		); err != nil {
 			return 0, err
 		}
@@ -912,7 +921,7 @@ func (s *Store) BacktestRunDetail(id int64) (BacktestRun, []BacktestRunRecord, e
 	}
 
 	rows, err := s.db.Query(
-		`SELECT seq, ts, side, confidence, size, leverage, entry, exit, pnl
+		`SELECT seq, ts, side, confidence, COALESCE(order_basis, ''), size, leverage, entry, COALESCE(stop_loss, 0), COALESCE(take_profit, 0), exit, pnl
 		 FROM backtest_run_records
 		 WHERE run_id = ?
 		 ORDER BY seq ASC`,
@@ -929,7 +938,7 @@ func (s *Store) BacktestRunDetail(id int64) (BacktestRun, []BacktestRunRecord, e
 			seq int
 			r   BacktestRunRecord
 		)
-		if err := rows.Scan(&seq, &r.TS, &r.Side, &r.Confidence, &r.Size, &r.Leverage, &r.Entry, &r.Exit, &r.PnL); err != nil {
+		if err := rows.Scan(&seq, &r.TS, &r.Side, &r.Confidence, &r.OrderBasis, &r.Size, &r.Leverage, &r.Entry, &r.StopLoss, &r.TakeProfit, &r.Exit, &r.PnL); err != nil {
 			return BacktestRun{}, nil, err
 		}
 		r.ID = fmt.Sprintf("%d-%d", id, seq)
