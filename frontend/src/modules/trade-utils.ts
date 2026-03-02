@@ -25,7 +25,7 @@ export function normalizeLeverage(value) {
 
 export function normalizeTradeSettings(raw) {
   return {
-    positionSizingMode: String(raw?.positionSizingMode || 'contracts'),
+    positionSizingMode: String(raw?.positionSizingMode || 'margin_pct'),
     highConfidenceAmount: normalizeDecimal(raw?.highConfidenceAmount, 0, 1000000),
     lowConfidenceAmount: normalizeDecimal(raw?.lowConfidenceAmount, 0, 1000000),
     highConfidenceMarginPct: normalizeDecimal(raw?.highConfidenceMarginPct, 0, 100),

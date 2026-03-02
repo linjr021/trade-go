@@ -100,14 +100,14 @@ func (s *Service) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	}
 	leverage := req.Leverage
 	if leverage <= 0 {
-		leverage = 10
+		leverage = 20
 	}
 	if leverage > 150 {
 		leverage = 150
 	}
 	sizingMode := strings.ToLower(strings.TrimSpace(req.PositionSizingMode))
 	if sizingMode != "contracts" && sizingMode != "margin_pct" {
-		sizingMode = "contracts"
+		sizingMode = "margin_pct"
 	}
 
 	highAmt := req.HighConfAmt

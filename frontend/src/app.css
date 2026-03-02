@@ -721,12 +721,16 @@ select[multiple] {
 }
 
 .strategy-picker-trigger {
+  display: block;
   width: 100%;
   text-align: left;
   background: #fff;
   color: #1d2c3b;
   border: 1px solid #d4dde6;
   min-height: 40px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .strategy-picker-menu {
@@ -754,12 +758,24 @@ select[multiple] {
   align-items: center;
   gap: 8px;
   margin: 0;
+  width: 100%;
+  min-width: 0;
   font-size: 13px;
   color: #1d2c3b;
 }
 
 .strategy-picker-item input {
   width: auto;
+  flex: 0 0 auto;
+}
+
+.strategy-picker-item span {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 textarea {

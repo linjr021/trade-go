@@ -105,6 +105,7 @@ npm run typecheck
 ```
 
 默认前端地址：`http://127.0.0.1:5173`，已代理 `/api` 到 `http://127.0.0.1:8080`。
+默认页面标题为 `21xG`，刷新后默认进入“资产详情”页。
 
 ## API 列表
 
@@ -131,10 +132,10 @@ npm run typecheck
 - `Symbol`: `BTCUSDT`
 - `HighConfidenceAmount`: `0.01`
 - `LowConfidenceAmount`: `0.005`
-- `PositionSizingMode`: `contracts`（可选 `contracts` / `margin_pct`）
-- `HighConfidenceMarginPct`: `0.10`
-- `LowConfidenceMarginPct`: `0.05`
-- `Leverage`: `10`
+- `PositionSizingMode`: `margin_pct`（可选 `contracts` / `margin_pct`）
+- `HighConfidenceMarginPct`: `0.05`
+- `LowConfidenceMarginPct`: `0.00`
+- `Leverage`: `20`
 - `Timeframe`: `15m`
 - `DataPoints`: `96`
 - `MaxRiskPerTradePct`: `0.01`
@@ -153,7 +154,7 @@ npm run typecheck
 - `LOW_CONFIDENCE_MARGIN_PCT`：低信心保证金占比（`0-1`）
 - `PY_STRATEGY_URL`：Python 策略服务地址（如 `http://127.0.0.1:9000`）
 - `AI_API_KEY`：通用 AI 接口 Key（Python 服务不可用时兜底可用）
-- `AI_BASE_URL`：通用 AI 接口请求地址（如 `https://xxx/v1/chat/completions`）
+- `AI_BASE_URL`：通用 AI 接口 Base URL（如 `https://api.openai.com/v1`）
 - `AI_MODEL`：通用 AI 接口模型名
 - `MODE`：运行模式（`cli` / `web`）
 - `HTTP_ADDR`：Go API 监听地址（默认 `:8080`）

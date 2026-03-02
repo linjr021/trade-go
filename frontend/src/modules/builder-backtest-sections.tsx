@@ -774,6 +774,7 @@ export function BacktestPageSection(p) {
                 <button
                   type="button"
                   className="strategy-picker-trigger"
+                  title={btSelectedStrategyText}
                   onClick={(e) => {
                     e.preventDefault()
                     if (!btStrategyPickerOpen) setBtStrategyDraft(btStrategySelection)

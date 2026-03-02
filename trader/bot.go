@@ -758,14 +758,14 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 		next.Symbol = sym
 	}
 	if update.HighConfidenceAmount != nil {
-		if *update.HighConfidenceAmount <= 0 {
-			return current, fmt.Errorf("high_confidence_amount 必须大于 0")
+		if *update.HighConfidenceAmount < 0 {
+			return current, fmt.Errorf("high_confidence_amount 不能小于 0")
 		}
 		next.HighConfidenceAmount = *update.HighConfidenceAmount
 	}
 	if update.LowConfidenceAmount != nil {
-		if *update.LowConfidenceAmount <= 0 {
-			return current, fmt.Errorf("low_confidence_amount 必须大于 0")
+		if *update.LowConfidenceAmount < 0 {
+			return current, fmt.Errorf("low_confidence_amount 不能小于 0")
 		}
 		next.LowConfidenceAmount = *update.LowConfidenceAmount
 	}
@@ -777,14 +777,14 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 		next.PositionSizingMode = mode
 	}
 	if update.HighConfidenceMarginPct != nil {
-		if *update.HighConfidenceMarginPct <= 0 || *update.HighConfidenceMarginPct > 1 {
-			return current, fmt.Errorf("high_confidence_margin_pct 需在 (0,1] 之间")
+		if *update.HighConfidenceMarginPct < 0 || *update.HighConfidenceMarginPct > 1 {
+			return current, fmt.Errorf("high_confidence_margin_pct 需在 [0,1] 之间")
 		}
 		next.HighConfidenceMarginPct = *update.HighConfidenceMarginPct
 	}
 	if update.LowConfidenceMarginPct != nil {
-		if *update.LowConfidenceMarginPct <= 0 || *update.LowConfidenceMarginPct > 1 {
-			return current, fmt.Errorf("low_confidence_margin_pct 需在 (0,1] 之间")
+		if *update.LowConfidenceMarginPct < 0 || *update.LowConfidenceMarginPct > 1 {
+			return current, fmt.Errorf("low_confidence_margin_pct 需在 [0,1] 之间")
 		}
 		next.LowConfidenceMarginPct = *update.LowConfidenceMarginPct
 	}

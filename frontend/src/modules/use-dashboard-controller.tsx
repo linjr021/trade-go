@@ -167,7 +167,7 @@ function toGeneratedStrategyPayload(row) {
 }
 
 export function useDashboardController() {
-  const [menu, setMenu] = useState('live')
+  const [menu, setMenu] = useState('assets')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [themeMode, setThemeMode] = useState(() => localStorage.getItem('ui-theme-mode') || 'system')
@@ -204,20 +204,20 @@ export function useDashboardController() {
   const btStrategyPickerRef = useRef(null)
 
   const [settings, setSettings] = useState({
-    positionSizingMode: 'contracts',
+    positionSizingMode: 'margin_pct',
     highConfidenceAmount: 0.01,
     lowConfidenceAmount: 0.005,
-    highConfidenceMarginPct: 10,
-    lowConfidenceMarginPct: 5,
-    leverage: 10,
+    highConfidenceMarginPct: 5,
+    lowConfidenceMarginPct: 0,
+    leverage: 20,
   })
   const [paperSettings, setPaperSettings] = useState({
-    positionSizingMode: 'contracts',
+    positionSizingMode: 'margin_pct',
     highConfidenceAmount: 0.01,
     lowConfidenceAmount: 0.005,
-    highConfidenceMarginPct: 10,
-    lowConfidenceMarginPct: 5,
-    leverage: 10,
+    highConfidenceMarginPct: 5,
+    lowConfidenceMarginPct: 0,
+    leverage: 20,
   })
   const [systemSettings, setSystemSettings] = useState({ ...systemSettingDefaults })
   const [systemSubTab, setSystemSubTab] = useState('env')
@@ -274,12 +274,12 @@ export function useDashboardController() {
     pair: 'BTCUSDT',
     margin: 200,
     settings: {
-      positionSizingMode: 'contracts',
+      positionSizingMode: 'margin_pct',
       highConfidenceAmount: 0.01,
       lowConfidenceAmount: 0.005,
-      highConfidenceMarginPct: 10,
-      lowConfidenceMarginPct: 5,
-      leverage: 10,
+      highConfidenceMarginPct: 5,
+      lowConfidenceMarginPct: 0,
+      leverage: 20,
     },
   })
 
@@ -320,12 +320,12 @@ export function useDashboardController() {
   const [btStrategy, setBtStrategy] = useState('')
   const [btPair, setBtPair] = useState('BTCUSDT')
   const [btInitialMargin, setBtInitialMargin] = useState(1000)
-  const [btLeverage, setBtLeverage] = useState(10)
-  const [btPositionSizingMode, setBtPositionSizingMode] = useState('contracts')
+  const [btLeverage, setBtLeverage] = useState(20)
+  const [btPositionSizingMode, setBtPositionSizingMode] = useState('margin_pct')
   const [btHighConfidenceAmount, setBtHighConfidenceAmount] = useState(0.01)
   const [btLowConfidenceAmount, setBtLowConfidenceAmount] = useState(0.005)
-  const [btHighConfidenceMarginPct, setBtHighConfidenceMarginPct] = useState(10)
-  const [btLowConfidenceMarginPct, setBtLowConfidenceMarginPct] = useState(5)
+  const [btHighConfidenceMarginPct, setBtHighConfidenceMarginPct] = useState(5)
+  const [btLowConfidenceMarginPct, setBtLowConfidenceMarginPct] = useState(0)
   const [btStart, setBtStart] = useState('2021-01')
   const [btEnd, setBtEnd] = useState('2024-12')
   const [btRunning, setBtRunning] = useState(false)
@@ -441,23 +441,23 @@ export function useDashboardController() {
       setSettings((old) => ({
         ...old,
         ...normalizeTradeSettings({
-          positionSizingMode: String(cfg.position_sizing_mode || old.positionSizingMode || 'contracts'),
-          highConfidenceAmount: Number(cfg.high_confidence_amount || old.highConfidenceAmount || 0.01),
-          lowConfidenceAmount: Number(cfg.low_confidence_amount || old.lowConfidenceAmount || 0.005),
-          highConfidenceMarginPct: Number(cfg.high_confidence_margin_pct || 0.1) * 100,
-          lowConfidenceMarginPct: Number(cfg.low_confidence_margin_pct || 0.05) * 100,
-          leverage: Number(cfg.leverage || old.leverage || 10),
+          positionSizingMode: String(cfg.position_sizing_mode ?? old.positionSizingMode ?? 'margin_pct'),
+          highConfidenceAmount: Number(cfg.high_confidence_amount ?? old.highConfidenceAmount ?? 0.01),
+          lowConfidenceAmount: Number(cfg.low_confidence_amount ?? old.lowConfidenceAmount ?? 0.005),
+          highConfidenceMarginPct: Number(cfg.high_confidence_margin_pct ?? 0.05) * 100,
+          lowConfidenceMarginPct: Number(cfg.low_confidence_margin_pct ?? 0) * 100,
+          leverage: Number(cfg.leverage ?? old.leverage ?? 20),
         }),
       }))
       setPaperSettings((old) => ({
         ...old,
         ...normalizeTradeSettings({
-          positionSizingMode: String(cfg.position_sizing_mode || old.positionSizingMode || 'contracts'),
-          highConfidenceAmount: Number(cfg.high_confidence_amount || old.highConfidenceAmount || 0.01),
-          lowConfidenceAmount: Number(cfg.low_confidence_amount || old.lowConfidenceAmount || 0.005),
-          highConfidenceMarginPct: Number(cfg.high_confidence_margin_pct || 0.1) * 100,
-          lowConfidenceMarginPct: Number(cfg.low_confidence_margin_pct || 0.05) * 100,
-          leverage: Number(cfg.leverage || old.leverage || 10),
+          positionSizingMode: String(cfg.position_sizing_mode ?? old.positionSizingMode ?? 'margin_pct'),
+          highConfidenceAmount: Number(cfg.high_confidence_amount ?? old.highConfidenceAmount ?? 0.01),
+          lowConfidenceAmount: Number(cfg.low_confidence_amount ?? old.lowConfidenceAmount ?? 0.005),
+          highConfidenceMarginPct: Number(cfg.high_confidence_margin_pct ?? 0.05) * 100,
+          lowConfidenceMarginPct: Number(cfg.low_confidence_margin_pct ?? 0) * 100,
+          leverage: Number(cfg.leverage ?? old.leverage ?? 20),
         }),
       }))
       if (cfg?.symbol) {
@@ -1329,6 +1329,18 @@ export function useDashboardController() {
     }
   }
 
+  const persistEnabledStrategiesEnv = async (nextEnabled = []) => {
+    const normalized = Array.from(new Set(
+      (Array.isArray(nextEnabled) ? nextEnabled : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean),
+    )).slice(0, 3)
+    const payload = { PY_STRATEGY_ENABLED: normalized.join(',') }
+    const res = await saveSystemSettings(payload)
+    setSystemSettings((prev) => mergeSystemDefaults(res?.data?.settings || { ...prev, ...payload }))
+    return normalized
+  }
+
   const saveAutoReviewEnv = async () => {
     setSavingAutoReviewSettings(true)
     setAutoReviewSaveHint('')
@@ -1849,9 +1861,16 @@ export function useDashboardController() {
     }
     const uniqueName = resolveUniqueGeneratedName(nextName, selectedRule.id)
 
+    const availableAfterRename = Array.from(new Set(
+      strategyOptions
+        .map((x) => (String(x || '').trim() === oldName ? uniqueName : String(x || '').trim()))
+        .filter(Boolean),
+    ))
+
     const updatedStrategies = generatedStrategies.map((s) => (s.id === selectedRule.id ? { ...s, name: uniqueName } : s))
     setGeneratedStrategies(updatedStrategies)
     await syncGeneratedStrategiesToBackend(updatedStrategies, false)
+    setStrategyOptions(availableAfterRename)
     setEnabledStrategies((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
     setStrategyDraft((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
     setPaperStrategySelection((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
@@ -1861,6 +1880,17 @@ export function useDashboardController() {
     setActiveStrategy((v) => (v === oldName ? uniqueName : v))
     setPaperStrategy((v) => (v === oldName ? uniqueName : v))
     setBtStrategy((v) => (v === oldName ? uniqueName : v))
+    try {
+      const envEnabled = parseStrategies(String(systemSettings?.PY_STRATEGY_ENABLED || '').split(','))
+      const nextEnvEnabled = Array.from(new Set(
+        envEnabled
+          .map((x) => (x === oldName ? uniqueName : x))
+          .filter((x) => availableAfterRename.includes(x)),
+      )).slice(0, 3)
+      await persistEnabledStrategiesEnv(nextEnvEnabled)
+    } catch {
+      // keep local state; env sync can be retried via manual save
+    }
     setRenameRuleName(uniqueName)
     setError('')
     showToast('success', uniqueName !== nextName ? `策略重命名成功（已自动命名为 ${uniqueName}）` : '策略重命名成功')
@@ -1880,7 +1910,10 @@ export function useDashboardController() {
     const remainingGeneratedNames = remainingRules
       .map((s) => String(s?.name || '').trim())
       .filter(Boolean)
-    const remainingExecution = Array.from(new Set([...strategyOptions, ...remainingGeneratedNames]))
+    const remainingBaseOptions = strategyOptions
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && x !== targetName)
+    const remainingExecution = Array.from(new Set([...remainingBaseOptions, ...remainingGeneratedNames]))
     const fallback = remainingExecution[0] || ''
 
     const normalizeSelection = (arr = []) => {
@@ -1894,6 +1927,7 @@ export function useDashboardController() {
 
     setGeneratedStrategies(remainingRules)
     await syncGeneratedStrategiesToBackend(remainingRules, false)
+    setStrategyOptions((arr) => arr.filter((x) => String(x || '').trim() !== targetName))
     setSelectedRuleId((prev) => (
       String(prev || '') === targetID
         ? String(remainingRules[0]?.id || '')
@@ -1920,6 +1954,15 @@ export function useDashboardController() {
       const cur = String(v || '').trim()
       return cur && cur !== targetName && remainingExecution.includes(cur) ? cur : fallback
     })
+    try {
+      const envEnabled = parseStrategies(String(systemSettings?.PY_STRATEGY_ENABLED || '').split(','))
+      const nextEnvEnabled = envEnabled
+        .filter((x) => x !== targetName && remainingExecution.includes(x))
+        .slice(0, 3)
+      await persistEnabledStrategiesEnv(nextEnvEnabled)
+    } catch {
+      // keep local state; env sync can be retried via manual save
+    }
 
     setError('')
     showToast('success', '策略规则已删除')

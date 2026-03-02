@@ -53,6 +53,7 @@ export function LivePageSection(p) {
               <button
                 type="button"
                 className="strategy-picker-trigger"
+                title={selectedStrategyText}
                 onClick={(e) => {
                   e.preventDefault()
                   if (!strategyPickerOpen) {
@@ -274,6 +275,38 @@ export function PaperPageSection(p) {
     renderOverviewCards,
     paperTradeRecords,
   } = p
+  const filteredPaperRecords = paperTradeRecords.filter((r) => !r.symbol || r.symbol === paperPair)
+  const paperTotalPnL = filteredPaperRecords.reduce((sum, row) => sum + Number(row?.unrealized_pnl || 0), 0)
+  const paperWins = filteredPaperRecords.reduce((cnt, row) => cnt + (Number(row?.unrealized_pnl || 0) > 0 ? 1 : 0), 0)
+  const paperLosses = filteredPaperRecords.reduce((cnt, row) => cnt + (Number(row?.unrealized_pnl || 0) < 0 ? 1 : 0), 0)
+  const paperPnlRatio = paperLosses === 0 ? (paperWins > 0 ? '∞' : '0') : (paperWins / paperLosses).toFixed(2)
+  const lastPaperRecord = filteredPaperRecords[0]
+  const lastSignal = String(lastPaperRecord?.signal || '').toUpperCase()
+  const lastConfidence = String(lastPaperRecord?.confidence || '').toUpperCase()
+  const paperMarketEmotion = lastSignal === 'BUY'
+    ? (lastConfidence === 'HIGH' ? '强偏多' : '偏多')
+    : lastSignal === 'SELL'
+      ? (lastConfidence === 'HIGH' ? '强偏空' : '偏空')
+      : '中性'
+  const oldestPaperRecordTS = filteredPaperRecords.reduce((minTS, row) => {
+    const ts = Date.parse(String(row?.ts || ''))
+    if (!Number.isFinite(ts) || ts <= 0) return minTS
+    return Math.min(minTS, ts)
+  }, Number.POSITIVE_INFINITY)
+  const paperDurationMinutes = Number.isFinite(oldestPaperRecordTS)
+    ? Math.max(0, Math.floor((Date.now() - oldestPaperRecordTS) / 60000))
+    : 0
+  const paperStrategyDurationText = Number.isFinite(oldestPaperRecordTS)
+    ? (paperDurationMinutes >= 60
+      ? `${Math.floor(paperDurationMinutes / 60)}h ${paperDurationMinutes % 60}m`
+      : `${paperDurationMinutes}m`)
+    : (paperSimRunning ? '运行中(<1m)' : '0m')
+  const paperAccountSnapshot = {
+    balance: Number(paperMargin || 0),
+    position: {
+      side: lastSignal || '无',
+    },
+  }
 
   return (
     <section className="stack">
@@ -292,6 +325,7 @@ export function PaperPageSection(p) {
               <button
                 type="button"
                 className="strategy-picker-trigger"
+                title={paperSelectedStrategyText}
                 onClick={(e) => {
                   e.preventDefault()
                   if (!paperStrategyPickerOpen) setPaperStrategyDraft(paperStrategySelection)
@@ -340,16 +374,6 @@ export function PaperPageSection(p) {
                 </div>
               ) : null}
             </div>
-          </label>
-          <label>
-            <span>模拟保证金(USDT)</span>
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={paperMargin}
-              onChange={(e) => setPaperMargin(Number(e.target.value))}
-            />
           </label>
           <label>
             <span>仓位模式</span>
@@ -438,6 +462,16 @@ export function PaperPageSection(p) {
               onBlur={() => setPaperSettings((v) => ({ ...v, leverage: normalizeLeverage(v.leverage) }))}
             />
           </label>
+          <label>
+            <span>模拟保证金(USDT)</span>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={paperMargin}
+              onChange={(e) => setPaperMargin(Number(e.target.value))}
+            />
+          </label>
         </div>
         <div className="actions-row">
           <Space wrap>
@@ -468,6 +502,13 @@ export function PaperPageSection(p) {
                 paperPair,
                 paperSelectedStrategyText,
                 <section className="sub-window"><h3>模拟交易补充</h3><p>该板块不发真实订单，仅用于策略参数演练与回测准备。</p></section>,
+                {
+                  marketEmotion: paperMarketEmotion,
+                  totalPnL: paperTotalPnL,
+                  account: paperAccountSnapshot,
+                  strategyDurationText: paperStrategyDurationText,
+                  pnlRatio: paperPnlRatio,
+                },
               ),
             },
             {
@@ -475,7 +516,7 @@ export function PaperPageSection(p) {
               label: '交易记录',
               children: (
                 <div className="builder-pane">
-                  <TradeRecordsTable records={paperTradeRecords.filter((r) => !r.symbol || r.symbol === paperPair)} />
+                  <TradeRecordsTable records={filteredPaperRecords} />
                 </div>
               ),
             },

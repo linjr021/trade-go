@@ -13,18 +13,18 @@ import { useDashboardController } from '@/modules/use-dashboard-controller'
 export default function App() {
   const c = useDashboardController()
 
-  const renderOverviewCards = (pair, strategyName, extra = null) => (
+  const renderOverviewCards = (pair, strategyName, extra = null, overrides = {}) => (
     <OverviewCardsPanel
       pair={pair}
       strategyName={strategyName}
-      marketEmotion={c.marketEmotion}
-      totalPnL={c.totalPnL}
-      account={c.account}
-      strategyDurationText={c.strategyDurationText}
-      pnlRatio={c.pnlRatio}
+      marketEmotion={overrides.marketEmotion ?? c.marketEmotion}
+      totalPnL={overrides.totalPnL ?? c.totalPnL}
+      account={overrides.account ?? c.account}
+      strategyDurationText={overrides.strategyDurationText ?? c.strategyDurationText}
+      pnlRatio={overrides.pnlRatio ?? c.pnlRatio}
       extra={extra}
       resolvedTheme={c.resolvedTheme}
-      activeExchangeType={c.activeExchangeType}
+      activeExchangeType={overrides.activeExchangeType ?? c.activeExchangeType}
     />
   )
 
