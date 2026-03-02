@@ -22,11 +22,30 @@ type llmUsageState struct {
 	TotalTokens      int64
 	LastUsedAt       time.Time
 	ByChannel        map[string]*llmUsageChannel
+	NextID           int64
+	Entries          []llmUsageLogEntry
+}
+
+type llmUsageLogEntry struct {
+	ID               int64  `json:"id"`
+	Channel          string `json:"channel"`
+	Model            string `json:"model"`
+	Prompt           string `json:"prompt"`
+	Completion       string `json:"completion"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	CreatedAt        string `json:"created_at"`
 }
 
 var (
 	llmUsageMu sync.RWMutex
 	llmUsage   = llmUsageState{ByChannel: map[string]*llmUsageChannel{}}
+)
+
+const (
+	llmUsageMaxEntries = 500
+	llmUsageTextLimit  = 12000
 )
 
 func estimateTokens(text string) int64 {
@@ -44,10 +63,15 @@ func estimateTokens(text string) int64 {
 }
 
 func recordLLMUsage(channel, prompt, completion string) {
+	recordLLMUsageWithMeta(channel, "", prompt, completion)
+}
+
+func recordLLMUsageWithMeta(channel, model, prompt, completion string) {
 	ch := strings.TrimSpace(channel)
 	if ch == "" {
 		ch = "default"
 	}
+	m := strings.TrimSpace(model)
 	promptTokens := estimateTokens(prompt)
 	completionTokens := estimateTokens(completion)
 	total := promptTokens + completionTokens
@@ -72,6 +96,23 @@ func recordLLMUsage(channel, prompt, completion string) {
 	item.CompletionTokens += completionTokens
 	item.TotalTokens += total
 	item.LastUsedAt = now.Format(time.RFC3339)
+
+	llmUsage.NextID++
+	entry := llmUsageLogEntry{
+		ID:               llmUsage.NextID,
+		Channel:          ch,
+		Model:            m,
+		Prompt:           clipForLog(prompt, llmUsageTextLimit),
+		Completion:       clipForLog(completion, llmUsageTextLimit),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      total,
+		CreatedAt:        now.Format(time.RFC3339),
+	}
+	llmUsage.Entries = append(llmUsage.Entries, entry)
+	if len(llmUsage.Entries) > llmUsageMaxEntries {
+		llmUsage.Entries = llmUsage.Entries[len(llmUsage.Entries)-llmUsageMaxEntries:]
+	}
 }
 
 func getLLMUsageSnapshot() map[string]any {
@@ -100,5 +141,44 @@ func getLLMUsageSnapshot() map[string]any {
 		"total_tokens":      llmUsage.TotalTokens,
 		"last_used_at":      lastUsedAt,
 		"by_channel":        byChannel,
+		"log_size":          len(llmUsage.Entries),
 	}
+}
+
+func getLLMUsageLogs(limit int, channel string) []llmUsageLogEntry {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	ch := strings.TrimSpace(channel)
+
+	llmUsageMu.RLock()
+	defer llmUsageMu.RUnlock()
+
+	out := make([]llmUsageLogEntry, 0, limit)
+	for i := len(llmUsage.Entries) - 1; i >= 0; i-- {
+		it := llmUsage.Entries[i]
+		if ch != "" && it.Channel != ch {
+			continue
+		}
+		out = append(out, it)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func clipForLog(text string, max int) string {
+	s := strings.TrimSpace(text)
+	if s == "" || max <= 0 {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + "...(truncated)"
 }

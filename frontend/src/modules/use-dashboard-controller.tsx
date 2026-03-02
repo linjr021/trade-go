@@ -11,10 +11,11 @@ import {
 import { fmtTime } from '@/modules/format'
 import { useCloseOnOutside } from '@/modules/use-close-on-outside'
 import {
+  AUTO_REVIEW_ENV_KEYS,
   envFieldDefs,
   HISTORY_MAX_MONTH,
   LLM_PRODUCT_CATALOG as DEFAULT_LLM_PRODUCT_CATALOG,
-  promptSettingDefaults,
+  strategyGeneratorPromptTemplateDefault,
   strategyTemplateFallback,
   systemSettingDefaults,
 } from '@/modules/constants'
@@ -53,26 +54,117 @@ import {
   getTradeRecords,
   getStatus,
   getStrategyTemplate,
+  getGeneratedStrategies,
   getStrategies,
   getStrategyScores,
-  getPromptSettings,
   getSystemSettings,
   generateStrategyPreference,
-  resetPromptSettings,
+  getSkillWorkflow,
+  saveSkillWorkflow,
+  resetSkillWorkflow,
+  getLLMUsageLogs,
   runBacktestApi,
   getBacktestHistory,
   getBacktestHistoryDetail,
   deleteBacktestHistory,
   runNow,
-  savePromptSettings,
   saveSystemSettings,
   getSystemRuntimeStatus,
   restartSystemRuntime,
   startScheduler,
   stopScheduler,
   uploadStrategyFile,
+  syncGeneratedStrategies,
   updateSettings,
 } from '../api'
+
+const DEFAULT_SKILL_WORKFLOW = {
+  version: 'skill-workflow/v1',
+  updated_at: '',
+  steps: [
+    { id: 'spec-builder', name: '规格构建', description: '交易习惯转执行约束（硬边界）', enabled: true, timeout_sec: 8, max_retry: 1, on_fail: 'hard_fail' },
+    { id: 'strategy-draft', name: '策略草案', description: '生成结构化策略草案', enabled: true, timeout_sec: 16, max_retry: 1, on_fail: 'hold' },
+    { id: 'optimizer', name: '参数优化', description: '回测驱动参数优化', enabled: true, timeout_sec: 18, max_retry: 1, on_fail: 'hold' },
+    { id: 'risk-reviewer', name: '风险复核', description: '过拟合与极端行情风险复核', enabled: true, timeout_sec: 10, max_retry: 0, on_fail: 'hard_fail' },
+    { id: 'release-packager', name: '发布打包', description: '打包上线策略版本与监控建议', enabled: true, timeout_sec: 10, max_retry: 0, on_fail: 'hold' },
+  ],
+  constraints: {
+    max_leverage_cap: 150,
+    max_drawdown_cap_pct: 0.2,
+    max_risk_per_trade_cap_pct: 0.03,
+    min_profit_loss_floor: 1.5,
+    block_trade_on_skill_fail: true,
+  },
+  prompts: {
+    strategy_generator_system_prompt: '你是量化策略架构师，只能返回严格 JSON。',
+    strategy_generator_task_prompt: '请基于用户选项与当前市场状态，生成可落地的交易偏好提示词与策略模板。',
+    strategy_generator_requirements: [
+      '仅输出严格 JSON',
+      'preference_prompt 必须包含入场区、止损、止盈、盈亏比与 HOLD 条件',
+      'preference_prompt 优先使用相对规则（EMA/ATR/百分比区间），避免写死绝对价格；若给出绝对价位，需附带动态重算条件',
+      'generator_prompt 必须包含 ${symbol} 与 ${habit}',
+      '不要输出固定下单金额或固定杠杆',
+      '实际下单张数/保证金/杠杆必须遵循实盘执行设置',
+    ],
+    decision_system_prompt: '你是专业量化交易决策引擎。你只能输出严格JSON，不要输出任何额外文本。你负责方向与SL/TP建议，仓位和风控由系统执行。',
+    decision_policy_prompt: '优先保护本金；信号冲突或不确定时返回HOLD；避免低置信度反转。',
+  },
+}
+
+const WORKFLOW_STEP_NAME_BY_ID = {
+  'spec-builder': '规格构建',
+  'strategy-draft': '策略草案',
+  optimizer: '参数优化',
+  'risk-reviewer': '风险复核',
+  'release-packager': '发布打包',
+}
+
+const LEGACY_WORKFLOW_STEP_NAME_MAP = {
+  SpecBuilder: '规格构建',
+  StrategyDraft: '策略草案',
+  Optimizer: '参数优化',
+  RiskReviewer: '风险复核',
+  ReleasePackager: '发布打包',
+}
+
+function localizeWorkflowStepName(name, id, fallback) {
+  const raw = String(name || '').trim()
+  if (LEGACY_WORKFLOW_STEP_NAME_MAP[raw]) return LEGACY_WORKFLOW_STEP_NAME_MAP[raw]
+  if (raw) return raw
+  const byID = WORKFLOW_STEP_NAME_BY_ID[String(id || '').trim()]
+  if (byID) return byID
+  return String(fallback || id || '')
+}
+
+function normalizeGeneratedStrategyItem(row) {
+  if (!row || typeof row !== 'object') return null
+  const id = String(row.id || '').trim() || `st_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const name = String(row.name || '').trim()
+  if (!name) return null
+  const preferencePrompt = String(row.preference_prompt ?? row.preferencePrompt ?? '').trim()
+  const generatorPrompt = String(row.generator_prompt ?? row.generatorPrompt ?? row.prompt ?? '').trim()
+  return {
+    id,
+    name,
+    createdAt: String(row.created_at ?? row.createdAt ?? '').trim() || new Date().toISOString(),
+    preferencePrompt,
+    prompt: generatorPrompt || strategyGeneratorPromptTemplateDefault,
+    logic: String(row.logic || '').trim(),
+    basis: String(row.basis || '').trim(),
+  }
+}
+
+function toGeneratedStrategyPayload(row) {
+  return {
+    id: String(row?.id || '').trim(),
+    name: String(row?.name || '').trim(),
+    preference_prompt: String(row?.preferencePrompt || '').trim(),
+    generator_prompt: String(row?.prompt || '').trim(),
+    logic: String(row?.logic || '').trim(),
+    basis: String(row?.basis || '').trim(),
+    created_at: String(row?.createdAt || '').trim(),
+  }
+}
 
 export function useDashboardController() {
   const [menu, setMenu] = useState('live')
@@ -172,11 +264,6 @@ export function useDashboardController() {
     secret: '',
     passphrase: '',
   })
-  const [promptSettings, setPromptSettings] = useState({
-    trading_ai_system_prompt: '',
-    trading_ai_policy_prompt: '',
-    strategy_generator_prompt_template: '',
-  })
   const [paperMargin, setPaperMargin] = useState(200)
   const [paperLocalRecords, setPaperLocalRecords] = useState(() => loadPaperLocalRecords())
   const [paperSimRunning, setPaperSimRunning] = useState(false)
@@ -200,9 +287,9 @@ export function useDashboardController() {
   const [savingSettings, setSavingSettings] = useState(false)
   const [savingSystemSettings, setSavingSystemSettings] = useState(false)
   const [systemSaveHint, setSystemSaveHint] = useState('')
+  const [savingAutoReviewSettings, setSavingAutoReviewSettings] = useState(false)
+  const [autoReviewSaveHint, setAutoReviewSaveHint] = useState('')
   const [toast, setToast] = useState({ visible: false, type: 'success', message: '' })
-  const [savingPrompts, setSavingPrompts] = useState(false)
-  const [resettingPrompts, setResettingPrompts] = useState(false)
 
   const [builderTab, setBuilderTab] = useState('generate')
   const [habit, setHabit] = useState('1h')
@@ -221,6 +308,14 @@ export function useDashboardController() {
   const [strategyTemplate, setStrategyTemplate] = useState('')
   const [loadingTemplate, setLoadingTemplate] = useState(false)
   const [generatingStrategy, setGeneratingStrategy] = useState(false)
+  const [skillWorkflow, setSkillWorkflow] = useState(DEFAULT_SKILL_WORKFLOW)
+  const [loadingSkillWorkflow, setLoadingSkillWorkflow] = useState(false)
+  const [savingSkillWorkflow, setSavingSkillWorkflow] = useState(false)
+  const [aiWorkflowTab, setAiWorkflowTab] = useState('config')
+  const [aiWorkflowLogs, setAiWorkflowLogs] = useState([])
+  const [aiWorkflowLogsLoading, setAiWorkflowLogsLoading] = useState(false)
+  const [aiWorkflowLogChannel, setAiWorkflowLogChannel] = useState('strategy_generator')
+  const [aiWorkflowLogLimit, setAiWorkflowLogLimit] = useState(50)
 
   const [btStrategy, setBtStrategy] = useState('')
   const [btPair, setBtPair] = useState('BTCUSDT')
@@ -271,10 +366,22 @@ export function useDashboardController() {
   const btSelectedStrategyText = btStrategySelection.length ? btStrategySelection.join(', ') : '请选择策略'
   const liveStrategyLabel = enabledStrategies.length ? enabledStrategies.join(' / ') : (activeStrategy || '-')
   const activeExchangeType = useMemo(() => {
+    const fromAccount = String(account?.active_exchange || '').trim().toLowerCase()
+    if (fromAccount === 'okx' || fromAccount === 'binance') {
+      return fromAccount
+    }
+    const fromRuntime = String(systemRuntime?.integration?.exchange?.exchange || '').trim().toLowerCase()
+    if (fromRuntime === 'okx' || fromRuntime === 'binance') {
+      return fromRuntime
+    }
     const id = String(activeExchangeId || '').trim()
     const matched = exchangeConfigs.find((x) => String(x?.id || '').trim() === id)
-    return String(matched?.exchange || 'binance').trim().toLowerCase() || 'binance'
-  }, [activeExchangeId, exchangeConfigs])
+    const fromConfig = String(matched?.exchange || '').trim().toLowerCase()
+    if (fromConfig === 'okx' || fromConfig === 'binance') {
+      return fromConfig
+    }
+    return 'binance'
+  }, [account?.active_exchange, systemRuntime, activeExchangeId, exchangeConfigs])
   const selectedLLMPreset = useMemo(
     () => llmProductCatalog.find((p) => String(p?.product || '') === String(newLLM?.product || '')) || llmProductCatalog[0],
     [newLLM?.product, llmProductCatalog],
@@ -289,6 +396,7 @@ export function useDashboardController() {
       { key: 'assets', label: '资产详情', icon: <Wallet size={16} /> },
       { key: 'live', label: '实盘交易', icon: <CandlestickChart size={16} /> },
       { key: 'paper', label: '模拟交易', icon: <FlaskConical size={16} /> },
+      { key: 'skill_workflow', label: 'AI 工作流', icon: <Bot size={16} /> },
       { key: 'builder', label: '策略生成', icon: <Bot size={16} /> },
       { key: 'backtest', label: '历史回测', icon: <History size={16} /> },
       { key: 'system', label: '系统设置', icon: <Settings2 size={16} /> },
@@ -374,7 +482,12 @@ export function useDashboardController() {
   }
 
   const paperTradeRecords = useMemo(
-    () => paperLocalRecords.filter((r) => !r.symbol || r.symbol === paperPair),
+    () => paperLocalRecords.filter((r) => {
+      const isApproved = r?.approved === undefined
+        ? String(r?.signal || '').toUpperCase() !== 'HOLD'
+        : Boolean(r?.approved)
+      return isApproved && (!r?.symbol || r.symbol === paperPair)
+    }),
     [paperLocalRecords, paperPair],
   )
 
@@ -441,13 +554,16 @@ export function useDashboardController() {
     const size = signal === 'HOLD' ? 0 : computePaperOrderSize(price, confidence, simCfg)
     const pnl = calcPaperPnL(signal, prev, price, size)
 
+    paperLastPriceRef.current = price
+    if (signal === 'HOLD' || !(size > 0)) return
+
     const rec = {
       id: `paper-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       ts: nowISO,
       symbol: simPair,
       signal,
       confidence,
-      approved: signal !== 'HOLD' && size > 0,
+      approved: true,
       approved_size: Number(size || 0),
       price: Number(price || 0),
       unrealized_pnl: Number(pnl || 0),
@@ -455,8 +571,6 @@ export function useDashboardController() {
       leverage: normalizeLeverage(simCfg?.settings?.leverage),
       source: 'paper_local',
     }
-
-    paperLastPriceRef.current = price
     setPaperLocalRecords((arr) => [rec, ...arr].slice(0, 2000))
   }
 
@@ -523,12 +637,35 @@ export function useDashboardController() {
   useCloseOnOutside(paperStrategyPickerOpen, paperStrategyPickerRef, closePaperStrategyPicker)
   useCloseOnOutside(btStrategyPickerOpen, btStrategyPickerRef, closeBtStrategyPicker)
 
+  const syncGeneratedStrategiesToBackend = useCallback(async (rules, silent = true) => {
+    try {
+      const payload = (Array.isArray(rules) ? rules : [])
+        .map((row) => toGeneratedStrategyPayload(row))
+        .filter((row) => row.name)
+      const res = await syncGeneratedStrategies(payload)
+      const synced = Array.isArray(res?.data?.strategies)
+        ? res.data.strategies
+          .map((row) => normalizeGeneratedStrategyItem(row))
+          .filter(Boolean)
+        : payload
+      setGeneratedStrategies(synced)
+      return synced
+    } catch (e) {
+      if (!silent) {
+        const reason = e?.response?.data?.error || e?.message || '后端同步失败'
+        showToast('warning', `策略已本地更新，但后端同步失败：${reason}`)
+      }
+      return Array.isArray(rules) ? rules : []
+    }
+  }, [])
+
   const loadSystemAndStrategies = async () => {
-    const [sysRes, strategyRes, promptRes, integrationRes] = await Promise.allSettled([
+    const [sysRes, strategyRes, integrationRes, workflowRes, generatedRes] = await Promise.allSettled([
       getSystemSettings(),
       getStrategies(),
-      getPromptSettings(),
       getIntegrations(),
+      getSkillWorkflow(),
+      getGeneratedStrategies(),
     ])
 
     let merged = mergeSystemDefaults(systemSettings)
@@ -537,29 +674,15 @@ export function useDashboardController() {
     }
     setSystemSettings(merged)
 
-    if (promptRes.status === 'fulfilled') {
-      const prompts = promptRes.value?.data?.prompts || {}
-      setPromptSettings({
-        trading_ai_system_prompt: String(
-          prompts.trading_ai_system_prompt || promptSettingDefaults.trading_ai_system_prompt
-        ),
-        trading_ai_policy_prompt: String(
-          prompts.trading_ai_policy_prompt || promptSettingDefaults.trading_ai_policy_prompt
-        ),
-        strategy_generator_prompt_template: String(
-          prompts.strategy_generator_prompt_template || promptSettingDefaults.strategy_generator_prompt_template
-        ),
-      })
-    } else {
-      setPromptSettings((v) => ({
-        trading_ai_system_prompt:
-          String(v.trading_ai_system_prompt || '').trim() || promptSettingDefaults.trading_ai_system_prompt,
-        trading_ai_policy_prompt:
-          String(v.trading_ai_policy_prompt || '').trim() || promptSettingDefaults.trading_ai_policy_prompt,
-        strategy_generator_prompt_template:
-          String(v.strategy_generator_prompt_template || '').trim() ||
-          promptSettingDefaults.strategy_generator_prompt_template,
-      }))
+    let generatedNamesLoaded = []
+    if (generatedRes.status === 'fulfilled') {
+      const generated = Array.isArray(generatedRes.value?.data?.strategies)
+        ? generatedRes.value.data.strategies
+          .map((row) => normalizeGeneratedStrategyItem(row))
+          .filter(Boolean)
+        : []
+      setGeneratedStrategies(generated)
+      generatedNamesLoaded = generated.map((x) => String(x?.name || '').trim()).filter(Boolean)
     }
 
     if (strategyRes.status === 'fulfilled') {
@@ -567,7 +690,7 @@ export function useDashboardController() {
       const enabled = parseStrategies(strategyRes.value?.data?.enabled)
       const byEnv = parseStrategies(String(merged.PY_STRATEGY_ENABLED || '').split(','))
       const mergedSet = Array.from(new Set([...available, ...enabled, ...byEnv]))
-      const mergedExecution = Array.from(new Set([...mergedSet, ...generatedStrategyNames]))
+      const mergedExecution = Array.from(new Set([...mergedSet, ...generatedNamesLoaded, ...generatedStrategyNames]))
       const enabledMerged = Array.from(new Set([...enabled, ...byEnv])).filter((x) => mergedExecution.includes(x))
       if (mergedSet.length) {
         setStrategyOptions(mergedSet)
@@ -622,6 +745,11 @@ export function useDashboardController() {
       setActiveExchangeId(String(data.active_exchange_id || ''))
       setExchangeBound(Boolean(data.exchange_bound))
     }
+    if (workflowRes.status === 'fulfilled') {
+      setSkillWorkflow(normalizeSkillWorkflowState(workflowRes.value?.data?.workflow || DEFAULT_SKILL_WORKFLOW))
+    } else {
+      setSkillWorkflow((prev) => normalizeSkillWorkflowState(prev))
+    }
   }
 
   useEffect(() => {
@@ -642,6 +770,200 @@ export function useDashboardController() {
 
   const showToast = (type, message) => {
     setToast({ visible: true, type, message: String(message || '') })
+  }
+
+  const normalizeSkillWorkflowState = (raw) => {
+    const base = raw && typeof raw === 'object' ? raw : {}
+    const stepsIn = Array.isArray(base.steps) ? base.steps : DEFAULT_SKILL_WORKFLOW.steps
+    const defaultsByID = {}
+    for (const s of DEFAULT_SKILL_WORKFLOW.steps) defaultsByID[s.id] = s
+    const steps = DEFAULT_SKILL_WORKFLOW.steps.map((d) => {
+      const m = stepsIn.find((x) => String(x?.id || '') === d.id) || {}
+      return {
+        ...d,
+        enabled: Boolean(m?.enabled ?? d.enabled),
+        timeout_sec: Math.max(1, Math.min(300, Number(m?.timeout_sec ?? d.timeout_sec) || d.timeout_sec)),
+        max_retry: Math.max(0, Math.min(5, Number(m?.max_retry ?? d.max_retry) || d.max_retry)),
+        on_fail: String(m?.on_fail || d.on_fail).toLowerCase() === 'hard_fail' ? 'hard_fail' : 'hold',
+        name: localizeWorkflowStepName(m?.name, d.id, defaultsByID[d.id]?.name || d.name),
+        description: String(m?.description || defaultsByID[d.id]?.description || d.description),
+      }
+    })
+    const constraintsIn = base.constraints && typeof base.constraints === 'object'
+      ? base.constraints
+      : DEFAULT_SKILL_WORKFLOW.constraints
+    const promptsIn = base.prompts && typeof base.prompts === 'object'
+      ? base.prompts
+      : DEFAULT_SKILL_WORKFLOW.prompts
+    const requirements = Array.isArray(promptsIn.strategy_generator_requirements)
+      ? promptsIn.strategy_generator_requirements
+      : []
+    const normalizedRequirements = requirements
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    return {
+      version: String(base.version || DEFAULT_SKILL_WORKFLOW.version),
+      updated_at: String(base.updated_at || ''),
+      steps,
+      constraints: {
+        max_leverage_cap: Math.max(1, Math.min(150, Number(constraintsIn.max_leverage_cap) || DEFAULT_SKILL_WORKFLOW.constraints.max_leverage_cap)),
+        max_drawdown_cap_pct: Math.max(0.01, Math.min(0.8, Number(constraintsIn.max_drawdown_cap_pct) || DEFAULT_SKILL_WORKFLOW.constraints.max_drawdown_cap_pct)),
+        max_risk_per_trade_cap_pct: Math.max(0.001, Math.min(0.2, Number(constraintsIn.max_risk_per_trade_cap_pct) || DEFAULT_SKILL_WORKFLOW.constraints.max_risk_per_trade_cap_pct)),
+        min_profit_loss_floor: Math.max(1, Math.min(10, Number(constraintsIn.min_profit_loss_floor) || DEFAULT_SKILL_WORKFLOW.constraints.min_profit_loss_floor)),
+        block_trade_on_skill_fail: Boolean(
+          constraintsIn.block_trade_on_skill_fail ?? DEFAULT_SKILL_WORKFLOW.constraints.block_trade_on_skill_fail,
+        ),
+      },
+      prompts: {
+        strategy_generator_system_prompt: String(
+          promptsIn.strategy_generator_system_prompt || DEFAULT_SKILL_WORKFLOW.prompts.strategy_generator_system_prompt,
+        ),
+        strategy_generator_task_prompt: String(
+          promptsIn.strategy_generator_task_prompt || DEFAULT_SKILL_WORKFLOW.prompts.strategy_generator_task_prompt,
+        ),
+        strategy_generator_requirements: normalizedRequirements.length
+          ? normalizedRequirements
+          : [...DEFAULT_SKILL_WORKFLOW.prompts.strategy_generator_requirements],
+        decision_system_prompt: String(
+          promptsIn.decision_system_prompt || DEFAULT_SKILL_WORKFLOW.prompts.decision_system_prompt,
+        ),
+        decision_policy_prompt: String(
+          promptsIn.decision_policy_prompt || DEFAULT_SKILL_WORKFLOW.prompts.decision_policy_prompt,
+        ),
+      },
+    }
+  }
+
+  const loadSkillWorkflowConfig = async (silent = false) => {
+    if (!silent) setLoadingSkillWorkflow(true)
+    try {
+      const res = await getSkillWorkflow()
+      const incoming = res?.data?.workflow || DEFAULT_SKILL_WORKFLOW
+      setSkillWorkflow(normalizeSkillWorkflowState(incoming))
+    } catch (e) {
+      if (!silent) {
+        const reason = e?.response?.data?.error || e?.message || '加载失败'
+        setError(reason)
+        showToast('error', `加载 AI 工作流失败：${reason}`)
+      }
+      setSkillWorkflow((prev) => normalizeSkillWorkflowState(prev))
+    } finally {
+      if (!silent) setLoadingSkillWorkflow(false)
+    }
+  }
+
+  const loadAIWorkflowLogs = async (silent = false) => {
+    if (!silent) setAiWorkflowLogsLoading(true)
+    try {
+      const params = {
+        limit: Math.max(1, Math.min(500, Number(aiWorkflowLogLimit) || 50)),
+        channel: aiWorkflowLogChannel === 'all' ? '' : aiWorkflowLogChannel,
+      }
+      const res = await getLLMUsageLogs(params)
+      const rows = Array.isArray(res?.data?.logs) ? res.data.logs : []
+      setAiWorkflowLogs(rows)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '加载失败'
+      if (!silent) {
+        setError(reason)
+        showToast('error', `加载执行记录失败：${reason}`)
+      }
+    } finally {
+      if (!silent) setAiWorkflowLogsLoading(false)
+    }
+  }
+
+  const updateSkillStepField = (id, key, value) => {
+    const stepID = String(id || '').trim()
+    if (!stepID) return
+    setSkillWorkflow((prev) => {
+      const next = normalizeSkillWorkflowState(prev)
+      next.steps = next.steps.map((st) => {
+        if (String(st.id) !== stepID) return st
+        if (key === 'enabled') return { ...st, enabled: Boolean(value) }
+        if (key === 'timeout_sec') return { ...st, timeout_sec: Math.max(1, Math.min(300, Number(value) || st.timeout_sec)) }
+        if (key === 'max_retry') return { ...st, max_retry: Math.max(0, Math.min(5, Number(value) || st.max_retry)) }
+        if (key === 'on_fail') return { ...st, on_fail: String(value || st.on_fail).toLowerCase() === 'hard_fail' ? 'hard_fail' : 'hold' }
+        return st
+      })
+      return next
+    })
+  }
+
+  const updateSkillConstraintField = (key, value) => {
+    setSkillWorkflow((prev) => {
+      const next = normalizeSkillWorkflowState(prev)
+      const c = { ...next.constraints }
+      if (key === 'block_trade_on_skill_fail') {
+        c.block_trade_on_skill_fail = Boolean(value)
+      } else if (key === 'max_leverage_cap') {
+        c.max_leverage_cap = Math.max(1, Math.min(150, Number(value) || c.max_leverage_cap))
+      } else if (key === 'max_drawdown_cap_pct') {
+        c.max_drawdown_cap_pct = Math.max(0.01, Math.min(0.8, Number(value) || c.max_drawdown_cap_pct))
+      } else if (key === 'max_risk_per_trade_cap_pct') {
+        c.max_risk_per_trade_cap_pct = Math.max(0.001, Math.min(0.2, Number(value) || c.max_risk_per_trade_cap_pct))
+      } else if (key === 'min_profit_loss_floor') {
+        c.min_profit_loss_floor = Math.max(1, Math.min(10, Number(value) || c.min_profit_loss_floor))
+      }
+      return { ...next, constraints: c }
+    })
+  }
+
+  const updateSkillPromptField = (key, value) => {
+    setSkillWorkflow((prev) => {
+      const next = normalizeSkillWorkflowState(prev)
+      const prompts = { ...next.prompts }
+      if (key === 'strategy_generator_requirements') {
+        prompts.strategy_generator_requirements = String(value || '')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      } else if (key === 'strategy_generator_system_prompt') {
+        prompts.strategy_generator_system_prompt = String(value || '')
+      } else if (key === 'strategy_generator_task_prompt') {
+        prompts.strategy_generator_task_prompt = String(value || '')
+      } else if (key === 'decision_system_prompt') {
+        prompts.decision_system_prompt = String(value || '')
+      } else if (key === 'decision_policy_prompt') {
+        prompts.decision_policy_prompt = String(value || '')
+      }
+      return { ...next, prompts }
+    })
+  }
+
+  const saveSkillWorkflowConfig = async () => {
+    setSavingSkillWorkflow(true)
+    setError('')
+    try {
+      const payload = normalizeSkillWorkflowState(skillWorkflow)
+      const res = await saveSkillWorkflow(payload)
+      const next = normalizeSkillWorkflowState(res?.data?.workflow || payload)
+      setSkillWorkflow(next)
+      showToast('success', 'AI 工作流保存成功')
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '保存失败'
+      setError(reason)
+      showToast('error', `AI 工作流保存失败：${reason}`)
+    } finally {
+      setSavingSkillWorkflow(false)
+    }
+  }
+
+  const resetSkillWorkflowConfig = async () => {
+    setSavingSkillWorkflow(true)
+    setError('')
+    try {
+      const res = await resetSkillWorkflow()
+      const next = normalizeSkillWorkflowState(res?.data?.workflow || DEFAULT_SKILL_WORKFLOW)
+      setSkillWorkflow(next)
+      showToast('success', 'AI 工作流已恢复默认')
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '恢复默认失败'
+      setError(reason)
+      showToast('error', `恢复失败：${reason}`)
+    } finally {
+      setSavingSkillWorkflow(false)
+    }
   }
 
   const resetLLMModalDraft = () => {
@@ -903,6 +1225,13 @@ export function useDashboardController() {
     return () => clearInterval(timer)
   }, [menu, systemSubTab])
 
+  useEffect(() => {
+    if (menu !== 'skill_workflow' || aiWorkflowTab !== 'logs') return undefined
+    loadAIWorkflowLogs(false)
+    const timer = setInterval(() => loadAIWorkflowLogs(true), 15000)
+    return () => clearInterval(timer)
+  }, [menu, aiWorkflowTab, aiWorkflowLogChannel, aiWorkflowLogLimit])
+
   const marketEmotion = useMemo(() => {
     const confidence = String(status?.runtime?.last_signal?.confidence || 'LOW').toUpperCase()
     const change = Number(status?.runtime?.last_price?.price_change || 0)
@@ -1000,29 +1329,34 @@ export function useDashboardController() {
     }
   }
 
-  const savePromptConfig = async () => {
-    setSavingPrompts(true)
+  const saveAutoReviewEnv = async () => {
+    setSavingAutoReviewSettings(true)
+    setAutoReviewSaveHint('')
     setError('')
     try {
-      const payload = {
-        trading_ai_system_prompt: String(promptSettings.trading_ai_system_prompt || ''),
-        trading_ai_policy_prompt: String(promptSettings.trading_ai_policy_prompt || ''),
-        strategy_generator_prompt_template: String(promptSettings.strategy_generator_prompt_template || ''),
+      const payload = {}
+      for (const key of AUTO_REVIEW_ENV_KEYS) {
+        payload[key] = String(systemSettings?.[key] || '')
       }
-      const res = await savePromptSettings(payload)
-      const prompts = res?.data?.prompts || payload
-      setPromptSettings({
-        trading_ai_system_prompt: String(prompts.trading_ai_system_prompt || ''),
-        trading_ai_policy_prompt: String(prompts.trading_ai_policy_prompt || ''),
-        strategy_generator_prompt_template: String(prompts.strategy_generator_prompt_template || ''),
-      })
-      showToast('success', '提示词保存成功')
+      const res = await saveSystemSettings(payload)
+      setSystemSettings(mergeSystemDefaults(res?.data?.settings || { ...systemSettings, ...payload }))
+      setAutoReviewSaveHint(`已保存 ${new Date().toLocaleTimeString()}`)
+      const warnMsg = joinFieldMessages(res?.data?.warnings)
+      if (warnMsg) {
+        showToast('warning', `自动评估参数已保存，但存在告警：${warnMsg}`)
+      } else {
+        showToast('success', '自动评估参数保存成功')
+      }
+      await refreshCore(true)
     } catch (e) {
-      const reason = e?.response?.data?.error || e?.message || '提示词保存失败'
+      const base = e?.response?.data?.error || e?.message || '自动评估参数保存失败'
+      const detail = joinFieldMessages(e?.response?.data?.field_errors)
+      const reason = detail ? `${base}：${detail}` : base
+      setAutoReviewSaveHint('')
       setError(reason)
       showToast('error', `保存失败：${reason}`)
     } finally {
-      setSavingPrompts(false)
+      setSavingAutoReviewSettings(false)
     }
   }
 
@@ -1175,6 +1509,10 @@ export function useDashboardController() {
       setExchangeConfigs(Array.isArray(res?.data?.exchanges) ? res.data.exchanges : [])
       setActiveExchangeId(String(res?.data?.active_exchange_id || ''))
       setExchangeBound(Boolean(res?.data?.exchange_bound))
+      const boundExchange = String(res?.data?.active_exchange?.exchange || '').trim().toLowerCase()
+      if (boundExchange === 'okx' || boundExchange === 'binance') {
+        setAccount((prev) => ({ ...prev, active_exchange: boundExchange }))
+      }
       setNewExchange({
         name: '',
         exchange: 'binance',
@@ -1183,6 +1521,13 @@ export function useDashboardController() {
         passphrase: '',
       })
       setShowExchangeModal(false)
+      await refreshCore(true)
+      await Promise.all([
+        loadAssetOverview(),
+        loadAssetTrend(assetRange),
+        loadAssetCalendar(assetMonth),
+        loadAssetDistribution(),
+      ])
       showToast('success', `交易所参数添加并验证成功（ID=${res?.data?.added?.id || '-'})`)
     } catch (e) {
       const reason = e?.response?.data?.error || e?.message || '交易所参数添加失败'
@@ -1202,8 +1547,18 @@ export function useDashboardController() {
       const res = await activateExchangeIntegration(exchangeID)
       setActiveExchangeId(String(res?.data?.active_exchange_id || exchangeID))
       setExchangeBound(Boolean(res?.data?.exchange_bound))
+      const boundExchange = String(res?.data?.active_exchange?.exchange || '').trim().toLowerCase()
+      if (boundExchange === 'okx' || boundExchange === 'binance') {
+        setAccount((prev) => ({ ...prev, active_exchange: boundExchange }))
+      }
       await loadSystemAndStrategies()
       await refreshCore(true)
+      await Promise.all([
+        loadAssetOverview(),
+        loadAssetTrend(assetRange),
+        loadAssetCalendar(assetMonth),
+        loadAssetDistribution(),
+      ])
       showToast('success', `账号绑定成功（ID=${exchangeID}）`)
     } catch (e) {
       const reason = e?.response?.data?.error || e?.message || '绑定失败'
@@ -1225,7 +1580,19 @@ export function useDashboardController() {
       setExchangeConfigs(Array.isArray(res?.data?.exchanges) ? res.data.exchanges : [])
       setActiveExchangeId(String(res?.data?.active_exchange_id || ''))
       setExchangeBound(Boolean(res?.data?.exchange_bound))
+      const boundExchange = String(res?.data?.active_exchange?.exchange || '').trim().toLowerCase()
+      if (boundExchange === 'okx' || boundExchange === 'binance') {
+        setAccount((prev) => ({ ...prev, active_exchange: boundExchange }))
+      } else {
+        setAccount((prev) => ({ ...prev, active_exchange: '' }))
+      }
       await refreshCore(true)
+      await Promise.all([
+        loadAssetOverview(),
+        loadAssetTrend(assetRange),
+        loadAssetCalendar(assetMonth),
+        loadAssetDistribution(),
+      ])
       showToast('success', `账号已删除（ID=${exchangeID}）`)
     } catch (e) {
       const reason = e?.response?.data?.error || e?.message || '删除失败'
@@ -1233,24 +1600,6 @@ export function useDashboardController() {
       showToast('error', `删除失败：${reason}`)
     } finally {
       setDeletingExchangeId('')
-    }
-  }
-
-  const resetPromptConfig = async () => {
-    setResettingPrompts(true)
-    setError('')
-    try {
-      const res = await resetPromptSettings()
-      const prompts = res?.data?.prompts || {}
-      setPromptSettings({
-        trading_ai_system_prompt: String(prompts.trading_ai_system_prompt || ''),
-        trading_ai_policy_prompt: String(prompts.trading_ai_policy_prompt || ''),
-        strategy_generator_prompt_template: String(prompts.strategy_generator_prompt_template || ''),
-      })
-    } catch (e) {
-      setError(e?.response?.data?.error || e?.message || '恢复默认失败')
-    } finally {
-      setResettingPrompts(false)
     }
   }
 
@@ -1283,6 +1632,10 @@ export function useDashboardController() {
     setError('')
     setStrategyGenMode('')
     const id = `st_${Date.now()}`
+    const activeWorkflow = (Array.isArray(skillWorkflow?.steps) ? skillWorkflow.steps : [])
+      .filter((st) => Boolean(st?.enabled))
+      .map((st) => String(st?.id || '').trim())
+      .filter(Boolean)
     const buildLocalFallbackRule = (reason) => {
       const fallbackName = `AI_${genPair}_${habit}_${new Date().toISOString().slice(0, 10)}`
       return {
@@ -1296,12 +1649,19 @@ export function useDashboardController() {
         lowConfAction: genLowConfAction,
         directionBias: genDirectionBias,
         createdAt: new Date().toISOString(),
-        prompt: promptSettings.strategy_generator_prompt_template,
+        prompt: strategyGeneratorPromptTemplateDefault,
         preferencePrompt:
           `交易风格=${habit}；策略样式=${genStyle}；方向偏好=${genDirectionBias}；` +
           `低信心处理=${genLowConfAction}；允许反转=${genAllowReversal ? '是' : '否'}。`,
         logic: '前端本地回退：按当前选项生成默认规则，待后端恢复后可重新生成。',
         basis: `回退原因：${reason}`,
+        skillPackage: {
+          version: 'skill-pipeline/v1',
+          workflow: activeWorkflow.length
+            ? activeWorkflow
+            : ['spec-builder', 'strategy-draft', 'optimizer', 'risk-reviewer', 'release-packager'],
+          habit_profile: { habit, timeframe: habit === '10m' ? '15m' : (habit === '1h' ? '1h' : (habit === '4h' ? '4h' : '1d')) },
+        },
       }
     }
     try {
@@ -1324,6 +1684,7 @@ export function useDashboardController() {
       }
       const usedFallback = Boolean(res?.data?.fallback)
       const generated = res?.data?.generated || {}
+      const skillPackage = res?.data?.skill_package || null
       const baseName =
         String(generated.strategy_name || '').trim() ||
         `AI_${genPair}_${habit}_${new Date().toISOString().slice(0, 10)}`
@@ -1344,12 +1705,15 @@ export function useDashboardController() {
         lowConfAction: genLowConfAction,
         directionBias: genDirectionBias,
         createdAt: new Date().toISOString(),
-        prompt: generatorPrompt || promptSettings.strategy_generator_prompt_template,
+        prompt: generatorPrompt || strategyGeneratorPromptTemplateDefault,
         preferencePrompt: preferencePrompt || '',
         logic: logic || '按市场状态识别 -> 多因子确认 -> 风控过滤 -> 执行建议生成。',
         basis: basis || '基于实时行情与技术指标综合生成。',
+        skillPackage,
       }
-      setGeneratedStrategies((arr) => [rule, ...arr])
+      const nextRules = [rule, ...generatedStrategies]
+      setGeneratedStrategies(nextRules)
+      await syncGeneratedStrategiesToBackend(nextRules, false)
       setSelectedRuleId(id)
       setBuilderTab('rules')
       setStrategyGenMode(usedFallback ? 'fallback' : 'llm')
@@ -1365,7 +1729,9 @@ export function useDashboardController() {
       const fallbackRule = buildLocalFallbackRule(reason)
       const uniqueName = resolveUniqueGeneratedName(fallbackRule.name)
       const rule = { ...fallbackRule, name: uniqueName }
-      setGeneratedStrategies((arr) => [rule, ...arr])
+      const nextRules = [rule, ...generatedStrategies]
+      setGeneratedStrategies(nextRules)
+      await syncGeneratedStrategiesToBackend(nextRules, false)
       setSelectedRuleId(id)
       setBuilderTab('rules')
       setStrategyGenMode('fallback')
@@ -1460,7 +1826,7 @@ export function useDashboardController() {
     setBtStrategyPickerOpen(false)
   }
 
-  const renameGeneratedStrategy = () => {
+  const renameGeneratedStrategy = async () => {
     if (!selectedRule) {
       setError('请先选择要改名的策略')
       return
@@ -1483,7 +1849,9 @@ export function useDashboardController() {
     }
     const uniqueName = resolveUniqueGeneratedName(nextName, selectedRule.id)
 
-    setGeneratedStrategies((arr) => arr.map((s) => (s.id === selectedRule.id ? { ...s, name: uniqueName } : s)))
+    const updatedStrategies = generatedStrategies.map((s) => (s.id === selectedRule.id ? { ...s, name: uniqueName } : s))
+    setGeneratedStrategies(updatedStrategies)
+    await syncGeneratedStrategiesToBackend(updatedStrategies, false)
     setEnabledStrategies((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
     setStrategyDraft((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
     setPaperStrategySelection((arr) => arr.map((x) => (x === oldName ? uniqueName : x)))
@@ -1498,7 +1866,7 @@ export function useDashboardController() {
     showToast('success', uniqueName !== nextName ? `策略重命名成功（已自动命名为 ${uniqueName}）` : '策略重命名成功')
   }
 
-  const deleteGeneratedStrategy = (ruleID) => {
+  const deleteGeneratedStrategy = async (ruleID) => {
     const targetID = String(ruleID || '').trim()
     if (!targetID) return
     const target = generatedStrategies.find((s) => String(s?.id || '') === targetID)
@@ -1525,6 +1893,7 @@ export function useDashboardController() {
     }
 
     setGeneratedStrategies(remainingRules)
+    await syncGeneratedStrategiesToBackend(remainingRules, false)
     setSelectedRuleId((prev) => (
       String(prev || '') === targetID
         ? String(remainingRules[0]?.id || '')
@@ -1841,6 +2210,27 @@ export function useDashboardController() {
     setGenAllowReversal,
     generateStrategy,
     generatingStrategy,
+    skillWorkflow,
+    loadingSkillWorkflow,
+    savingSkillWorkflow,
+    aiWorkflowTab,
+    setAiWorkflowTab,
+    aiWorkflowLogs,
+    aiWorkflowLogsLoading,
+    aiWorkflowLogChannel,
+    setAiWorkflowLogChannel,
+    aiWorkflowLogLimit,
+    setAiWorkflowLogLimit,
+    autoReviewSaveHint,
+    savingAutoReviewSettings,
+    saveAutoReviewEnv,
+    updateSkillStepField,
+    updateSkillConstraintField,
+    updateSkillPromptField,
+    saveSkillWorkflowConfig,
+    resetSkillWorkflowConfig,
+    loadSkillWorkflowConfig,
+    loadAIWorkflowLogs,
     setUploadFile,
     loadStrategyTemplate,
     loadingTemplate,
@@ -1925,11 +2315,5 @@ export function useDashboardController() {
     bindExchangeAccount,
     deletingExchangeId,
     removeExchangeAccount,
-    promptSettings,
-    setPromptSettings,
-    resetPromptConfig,
-    resettingPrompts,
-    savePromptConfig,
-    savingPrompts,
   }
 }

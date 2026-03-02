@@ -4,6 +4,7 @@ export const MENU_ITEMS = [
   { key: 'assets', label: '资产详情' },
   { key: 'live', label: '实盘交易' },
   { key: 'paper', label: '模拟交易' },
+  { key: 'skill_workflow', label: 'AI 工作流' },
   { key: 'builder', label: '策略生成' },
   { key: 'backtest', label: '历史回测' },
   { key: 'system', label: '系统设置' },
@@ -40,6 +41,38 @@ export const envFieldGroups = [
       { key: 'HTTP_ADDR', label: '服务地址（:8080）' },
     ],
   },
+  {
+    title: '自动评估',
+    fields: [
+      { key: 'AUTO_REVIEW_ENABLED', label: '启用自动评估（true/false）' },
+      { key: 'AUTO_REVIEW_AFTER_ORDER_ONLY', label: '仅下单后评估（true/false）' },
+      { key: 'AUTO_REVIEW_INTERVAL_SEC', label: '评估间隔秒数（60-86400）' },
+      { key: 'AUTO_REVIEW_VOLATILITY_PCT', label: '波动阈值%（>0）' },
+      { key: 'AUTO_REVIEW_DRAWDOWN_WARN_PCT', label: '回撤预警比例（0-1）' },
+      { key: 'AUTO_REVIEW_LOSS_STREAK_WARN', label: '连续亏损预警次数' },
+      { key: 'AUTO_REVIEW_RISK_REDUCE_FACTOR', label: '风险收缩系数（0-1）' },
+      { key: 'AUTO_STRATEGY_REGEN_ENABLED', label: '启用自动重生成（true/false）' },
+      { key: 'AUTO_STRATEGY_REGEN_COOLDOWN_SEC', label: '重生成冷却秒数（300-604800）' },
+      { key: 'AUTO_STRATEGY_REGEN_LOSS_STREAK', label: '重生成连续亏损阈值' },
+      { key: 'AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT', label: '重生成回撤阈值（0-1）' },
+      { key: 'AUTO_STRATEGY_REGEN_MIN_RR', label: '重生成最小盈亏比（1-10）' },
+    ],
+  },
+]
+
+export const AUTO_REVIEW_ENV_KEYS = [
+  'AUTO_REVIEW_ENABLED',
+  'AUTO_REVIEW_AFTER_ORDER_ONLY',
+  'AUTO_REVIEW_INTERVAL_SEC',
+  'AUTO_REVIEW_VOLATILITY_PCT',
+  'AUTO_REVIEW_DRAWDOWN_WARN_PCT',
+  'AUTO_REVIEW_LOSS_STREAK_WARN',
+  'AUTO_REVIEW_RISK_REDUCE_FACTOR',
+  'AUTO_STRATEGY_REGEN_ENABLED',
+  'AUTO_STRATEGY_REGEN_COOLDOWN_SEC',
+  'AUTO_STRATEGY_REGEN_LOSS_STREAK',
+  'AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT',
+  'AUTO_STRATEGY_REGEN_MIN_RR',
 ]
 
 export const envFieldDefs = envFieldGroups.flatMap((group) => group.fields)
@@ -48,23 +81,21 @@ export const systemSettingDefaults = {
   PRODUCT_NAME: '21xG交易',
   PY_STRATEGY_URL: 'http://127.0.0.1:9000',
   PY_STRATEGY_ENABLED: 'ai_assisted,trend_following,mean_reversion,breakout',
+  AUTO_REVIEW_ENABLED: 'true',
+  AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',
+  AUTO_REVIEW_INTERVAL_SEC: '1800',
+  AUTO_REVIEW_VOLATILITY_PCT: '1.2',
+  AUTO_REVIEW_DRAWDOWN_WARN_PCT: '0.05',
+  AUTO_REVIEW_LOSS_STREAK_WARN: '2',
+  AUTO_REVIEW_RISK_REDUCE_FACTOR: '0.7',
+  AUTO_STRATEGY_REGEN_ENABLED: 'true',
+  AUTO_STRATEGY_REGEN_COOLDOWN_SEC: '21600',
+  AUTO_STRATEGY_REGEN_LOSS_STREAK: '3',
+  AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT: '0.08',
+  AUTO_STRATEGY_REGEN_MIN_RR: '2.0',
 }
 
-export const promptSettingDefaults = {
-  trading_ai_system_prompt: `你是加密永续量化交易决策引擎，交易标的默认 ${'${symbol}'}。
-你必须遵守：
-1) 仅输出严格JSON；
-2) 先判断市场状态（trend/range/breakout）再给信号；
-3) 信号不充分或冲突时优先HOLD；
-4) 你只负责方向、入场区、止损、止盈、盈亏比（盈利/亏损）；仓位由风控引擎执行；
-5) 不得决定固定下单金额、固定仓位和固定杠杆；这些均由实盘设置与风控引擎执行。`,
-  trading_ai_policy_prompt: `硬边界：
-1) 只能输出方向/入场区间/止损/止盈/盈亏比（盈利/亏损），不输出固定开仓金额或固定杠杆。
-2) 最低盈亏比（盈利/亏损）门槛：盈亏比 = |TP-Entry| / |Entry-SL| >= 1.5，推荐>=2.0。
-3) 若关键条件不足或冲突，必须输出HOLD并给出触发条件。
-4) 非高信心不允许频繁反转，优先顺势交易。
-5) 输出必须包含：首选策略、备选策略、入场区间、止损、目标、盈亏比估算。`,
-  strategy_generator_prompt_template: `你是资深量化策略研究员。请为 ${'${symbol}'} 在 ${'${habit}'} 交易习惯下生成一套可执行自动策略。
+export const strategyGeneratorPromptTemplateDefault = `你是资深量化策略研究员。请为 ${'${symbol}'} 在 ${'${habit}'} 交易习惯下生成一套可执行自动策略。
 按以下结构输出：
 
 1) 市场状态识别
@@ -87,8 +118,7 @@ export const promptSettingDefaults = {
 - 明确“策略何时失效需停用”
 
 6) 回测建议
-- 推荐回测区间、周期、指标、评估口径（总盈亏、胜率、盈亏比、回撤）`,
-}
+- 推荐回测区间、周期、指标、评估口径（总盈亏、胜率、盈亏比、回撤）`
 
 export const strategyTemplateFallback = `"""Sample custom strategy.
 

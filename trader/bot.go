@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -16,49 +17,77 @@ import (
 )
 
 type RuntimeSnapshot struct {
-	LastRunAt       time.Time           `json:"last_run_at"`
-	LastError       string              `json:"last_error"`
-	LastSignal      *models.TradeSignal `json:"last_signal"`
-	LastPrice       *models.PriceData   `json:"last_price"`
-	CurrentPosition *models.Position    `json:"current_position"`
+	LastRunAt           time.Time           `json:"last_run_at"`
+	LastError           string              `json:"last_error"`
+	LastSignal          *models.TradeSignal `json:"last_signal"`
+	LastPrice           *models.PriceData   `json:"last_price"`
+	CurrentPosition     *models.Position    `json:"current_position"`
+	LastOrderExecutedAt time.Time           `json:"last_order_executed_at"`
+	LastAutoReviewAt    time.Time           `json:"last_auto_review_at"`
+	NextAutoReviewAt    time.Time           `json:"next_auto_review_at"`
+	AutoRiskProfile     string              `json:"auto_risk_profile"`
+	AutoReviewReason    string              `json:"auto_review_reason"`
 }
 
 type TradeSettingsUpdate struct {
-	Symbol                  *string
-	HighConfidenceAmount    *float64
-	LowConfidenceAmount     *float64
-	PositionSizingMode      *string
-	HighConfidenceMarginPct *float64
-	LowConfidenceMarginPct  *float64
-	Leverage                *int
-	MaxRiskPerTradePct      *float64
-	MaxPositionPct          *float64
-	MaxConsecutiveLosses    *int
-	MaxDailyLossPct         *float64
-	MaxDrawdownPct          *float64
-	LiquidationBufferPct    *float64
+	Symbol                           *string
+	HighConfidenceAmount             *float64
+	LowConfidenceAmount              *float64
+	PositionSizingMode               *string
+	HighConfidenceMarginPct          *float64
+	LowConfidenceMarginPct           *float64
+	Leverage                         *int
+	MaxRiskPerTradePct               *float64
+	MaxPositionPct                   *float64
+	MaxConsecutiveLosses             *int
+	MaxDailyLossPct                  *float64
+	MaxDrawdownPct                   *float64
+	LiquidationBufferPct             *float64
+	AutoReviewEnabled                *bool
+	AutoReviewAfterOrderOnly         *bool
+	AutoReviewIntervalSec            *int
+	AutoReviewVolatilityPct          *float64
+	AutoReviewDrawdownWarnPct        *float64
+	AutoReviewLossStreakWarn         *int
+	AutoReviewRiskReduceFactor       *float64
+	AutoStrategyRegenEnabled         *bool
+	AutoStrategyRegenCooldownSec     *int
+	AutoStrategyRegenLossStreak      *int
+	AutoStrategyRegenDrawdownWarnPct *float64
+	AutoStrategyRegenMinRR           *float64
 }
 
 // Bot 交易机器人
 type Bot struct {
-	exchange      *exchange.Client
-	aiClient      *ai.Client
-	riskEngine    *risk.Engine
-	store         *storage.Store
-	signalHistory []models.TradeSignal
-	cfg           *config.TradeConfig
-	mu            sync.RWMutex
-	runtime       RuntimeSnapshot
+	exchange            *exchange.Client
+	aiClient            *ai.Client
+	riskEngine          *risk.Engine
+	store               *storage.Store
+	signalHistory       []models.TradeSignal
+	cfg                 *config.TradeConfig
+	baseCfg             config.TradeConfig
+	mu                  sync.RWMutex
+	runtime             RuntimeSnapshot
+	lastOrderExecutedAt time.Time
+	lastAutoReviewAt    time.Time
+	nextAutoReviewAt    time.Time
+	autoRiskProfile     string
+	autoReviewReason    string
 }
 
 func NewBot() *Bot {
 	cfg := &config.Config.Trade
-	return &Bot{
-		exchange:   exchange.NewClient(),
-		aiClient:   ai.NewClient(),
-		riskEngine: risk.NewEngine(cfg),
-		cfg:        cfg,
+	bot := &Bot{
+		exchange:        exchange.NewClient(),
+		aiClient:        ai.NewClient(),
+		riskEngine:      risk.NewEngine(cfg),
+		cfg:             cfg,
+		baseCfg:         *cfg,
+		autoRiskProfile: "normal",
 	}
+	bot.runtime.AutoRiskProfile = "normal"
+	bot.runtime.AutoReviewReason = "等待首次自动评估"
+	return bot
 }
 
 func (b *Bot) SetStore(s *storage.Store) {
@@ -83,6 +112,11 @@ func (b *Bot) ReloadClients() (err error) {
 	defer b.mu.Unlock()
 	b.exchange = exchange.NewClient()
 	b.aiClient = ai.NewClient()
+	b.baseCfg = *b.cfg
+	if b.autoRiskProfile == "" {
+		b.autoRiskProfile = "normal"
+	}
+	b.syncRuntimeAutoLocked()
 	return nil
 }
 
@@ -112,18 +146,32 @@ func (b *Bot) Setup() error {
 // Run 单次交易周期
 func (b *Bot) Run() {
 	cfg := b.TradeConfig()
+	cycleID := fmt.Sprintf("cycle_%d", time.Now().UnixNano())
 	b.setRuntime(time.Now(), "", nil, nil, nil)
 	fmt.Println("\n" + line())
 	fmt.Printf("执行时间: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Println(line())
 
-	// 1. 获取行情数据
+	// 1) market-read
+	marketReadAt := time.Now()
 	priceData, err := b.fetchPriceData()
 	if err != nil {
 		fmt.Printf("获取行情失败: %v\n", err)
+		b.saveSkillStepAudit(cycleID, "market-read", "failed", "market_unavailable", "", marketReadAt,
+			map[string]any{"symbol": cfg.Symbol, "timeframe": cfg.Timeframe},
+			map[string]any{"error": err.Error()},
+			"blocked")
 		b.setRuntime(time.Now(), err.Error(), nil, nil, nil)
 		return
 	}
+	b.saveSkillStepAudit(cycleID, "market-read", "ok", "ok", "", marketReadAt,
+		map[string]any{"symbol": cfg.Symbol, "timeframe": cfg.Timeframe},
+		map[string]any{
+			"price":        priceData.Price,
+			"price_change": priceData.PriceChange,
+			"timestamp":    priceData.Timestamp.Format(time.RFC3339),
+		},
+		"continue")
 	fmt.Printf("BTC当前价格: $%.2f | 变化: %+.2f%%\n", priceData.Price, priceData.PriceChange)
 
 	// 2. 获取持仓
@@ -133,24 +181,143 @@ func (b *Bot) Run() {
 		b.setRuntime(time.Now(), err.Error(), nil, &priceData, nil)
 	}
 
-	// 3. AI 分析（带重试）
+	// 2.5) auto-review (按配置在下单后间隔触发，自动收紧/恢复风险参数)
+	b.maybeAutoReview(cycleID, priceData)
+
+	// 2) strategy-select
+	strategySelectAt := time.Now()
 	signal := b.analyzeWithRetry(priceData, currentPos)
 	if signal.IsFallback {
 		fmt.Println("⚠️ 使用备用交易信号")
+		b.saveSkillStepAudit(cycleID, "strategy-select", "failed", "insufficient_signal", config.Config.AIModel, strategySelectAt,
+			map[string]any{
+				"price":       priceData.Price,
+				"position":    currentPos,
+				"history_len": len(b.SignalHistory(10)),
+			},
+			map[string]any{
+				"signal": signal,
+			},
+			"blocked")
+		b.saveAIDecision(signal, priceData, 0, false, "insufficient_signal", false)
+		_ = b.saveRiskEvent("risk_block", "strategy-select failed: insufficient_signal")
+		b.setRuntime(time.Now(), "strategy-select failed: insufficient_signal", &signal, &priceData, currentPos)
+		return
 	}
+	if ok, code, reason := validateSignalStrict(signal, priceData.Price); !ok {
+		fmt.Printf("⛔ strategy-select 校验失败: %s\n", reason)
+		b.saveSkillStepAudit(cycleID, "strategy-select", "failed", code, config.Config.AIModel, strategySelectAt,
+			map[string]any{
+				"price":       priceData.Price,
+				"position":    currentPos,
+				"history_len": len(b.SignalHistory(10)),
+			},
+			map[string]any{
+				"signal": signal,
+				"reason": reason,
+			},
+			"blocked")
+		b.saveAIDecision(signal, priceData, 0, false, code, false)
+		_ = b.saveRiskEvent("risk_block", "strategy-select failed: "+reason)
+		b.setRuntime(time.Now(), "strategy-select failed: "+reason, &signal, &priceData, currentPos)
+		return
+	}
+	b.addSignal(signal)
+	b.saveSkillStepAudit(cycleID, "strategy-select", "ok", "ok", config.Config.AIModel, strategySelectAt,
+		map[string]any{
+			"price":       priceData.Price,
+			"position":    currentPos,
+			"history_len": len(b.SignalHistory(10)),
+		},
+		map[string]any{
+			"signal": signal,
+		},
+		"continue")
 	b.setRuntime(time.Now(), "", &signal, &priceData, currentPos)
 
-	// 4. 风控仓位决策（AI 只决定方向）
+	// 3) risk-plan
+	riskPlanAt := time.Now()
 	tradeAmount, allow, riskReason := b.buildRiskPosition(signal, priceData, currentPos)
-	b.saveAIDecision(signal, priceData, tradeAmount, allow, riskReason)
+	b.saveAIDecision(signal, priceData, tradeAmount, allow, riskReason, false)
 	if !allow {
 		fmt.Printf("⛔ 风控阻断: %s\n", riskReason)
+		b.saveSkillStepAudit(cycleID, "risk-plan", "failed", "risk_blocked", "", riskPlanAt,
+			map[string]any{
+				"signal": signal,
+				"price":  priceData.Price,
+			},
+			map[string]any{
+				"approved": false,
+				"reason":   riskReason,
+			},
+			"blocked")
 		_ = b.saveRiskEvent("risk_block", riskReason)
 		return
 	}
+	b.saveSkillStepAudit(cycleID, "risk-plan", "ok", "ok", "", riskPlanAt,
+		map[string]any{
+			"signal": signal,
+			"price":  priceData.Price,
+		},
+		map[string]any{
+			"approved": true,
+			"size":     tradeAmount,
+		},
+		"continue")
 
-	// 4. 执行交易
-	b.executeTrade(signal, priceData, currentPos, tradeAmount)
+	// 4) order-plan + execute
+	orderPlanAt := time.Now()
+	planOK, planCode, planReason, planOutput := b.preflightOrderPlan(signal, priceData, tradeAmount)
+	if !planOK {
+		fmt.Printf("⛔ 下单前校验失败: %s\n", planReason)
+		b.saveAIDecision(signal, priceData, tradeAmount, false, planReason, false)
+		b.saveSkillStepAudit(cycleID, "order-plan", "failed", planCode, "", orderPlanAt,
+			map[string]any{
+				"signal": signal,
+				"price":  priceData.Price,
+				"size":   tradeAmount,
+			},
+			planOutput,
+			"blocked")
+		_ = b.saveRiskEvent("risk_block", planReason)
+		return
+	}
+	execOK, execCode, execErr := b.executeTrade(signal, priceData, currentPos, tradeAmount)
+	if !execOK {
+		errMsg := planReason
+		if execErr != nil {
+			errMsg = execErr.Error()
+		}
+		b.saveAIDecision(signal, priceData, tradeAmount, false, errMsg, false)
+		b.saveSkillStepAudit(cycleID, "order-plan", "failed", execCode, "", orderPlanAt,
+			map[string]any{
+				"signal": signal,
+				"price":  priceData.Price,
+				"size":   tradeAmount,
+			},
+			map[string]any{
+				"plan":  planOutput,
+				"error": errMsg,
+			},
+			"blocked")
+		if errMsg != "" {
+			_ = b.saveRiskEvent("order_error", errMsg)
+		}
+		return
+	}
+	b.saveAIDecision(signal, priceData, tradeAmount, true, execCode, execCode == "executed")
+	b.saveSkillStepAudit(cycleID, "order-plan", "ok", "ok", "", orderPlanAt,
+		map[string]any{
+			"signal": signal,
+			"price":  priceData.Price,
+			"size":   tradeAmount,
+		},
+		map[string]any{
+			"plan":           planOutput,
+			"execution_code": execCode,
+		},
+		"executed")
+
 	newPos, _ := b.exchange.FetchPosition(cfg.Symbol)
 	if newPos != nil {
 		_ = b.savePosition(*newPos)
@@ -212,7 +379,6 @@ func (b *Bot) analyzeWithRetry(pd models.PriceData, pos *models.Position) models
 			continue
 		}
 		if !sig.IsFallback {
-			b.addSignal(sig)
 			return sig
 		}
 		time.Sleep(time.Second)
@@ -259,7 +425,7 @@ func (b *Bot) addSignal(sig models.TradeSignal) {
 	}
 }
 
-func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, currentPos *models.Position, tradeAmount float64) {
+func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, currentPos *models.Position, tradeAmount float64) (bool, string, error) {
 	cfg := b.TradeConfig()
 	fmt.Printf("交易信号: %s | 信心: %s\n", signal.Signal, signal.Confidence)
 	fmt.Printf("理由: %s\n", signal.Reason)
@@ -275,16 +441,16 @@ func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, curre
 		}
 		if newSide != currentPos.Side {
 			if signal.Confidence != "HIGH" {
-				fmt.Printf("🔒 非高信心反转信号，保持现有%s仓\n", currentPos.Side)
-				return
+				fmt.Printf("非高信心反转信号，保持现有%s仓\n", currentPos.Side)
+				return false, "reverse_guard_low_confidence", nil
 			}
 			history := b.SignalHistory(2)
 			if len(history) >= 2 {
 				last2 := history[len(history)-2:]
 				for _, s := range last2 {
 					if s.Signal == signal.Signal {
-						fmt.Printf("🔒 近期已出现%s信号，避免频繁反转\n", signal.Signal)
-						return
+						fmt.Printf("近期已出现%s信号，避免频繁反转\n", signal.Signal)
+						return false, "reverse_guard_repeat_signal", nil
 					}
 				}
 			}
@@ -293,19 +459,19 @@ func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, curre
 
 	if cfg.TestMode {
 		fmt.Println("测试模式 - 仅模拟，不真实下单")
-		return
+		return true, "test_mode", nil
 	}
 
 	// 检查保证金
 	balance, err := b.exchange.FetchBalance()
 	if err != nil {
 		fmt.Printf("获取余额失败: %v\n", err)
-		return
+		return false, "balance_unavailable", err
 	}
 	requiredMargin := pd.Price * tradeAmount / float64(cfg.Leverage)
 	if requiredMargin > balance*0.8 {
-		fmt.Printf("⚠️ 保证金不足，需要 %.2f USDT，可用 %.2f USDT\n", requiredMargin, balance)
-		return
+		fmt.Printf("保证金不足，需要 %.2f USDT，可用 %.2f USDT\n", requiredMargin, balance)
+		return false, "insufficient_margin", nil
 	}
 
 	var execErr error
@@ -317,12 +483,13 @@ func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, curre
 		orders, execErr = b.openShort(currentPos, tradeAmount)
 	default:
 		fmt.Println("HOLD - 不操作")
+		return true, "hold", nil
 	}
 
 	if execErr != nil {
 		fmt.Printf("订单执行失败: %v\n", execErr)
 		_ = b.saveRiskEvent("order_error", execErr.Error())
-		return
+		return false, "order_execute_failed", execErr
 	}
 	for _, od := range orders {
 		_ = b.saveOrder(od)
@@ -331,11 +498,15 @@ func (b *Bot) executeTrade(signal models.TradeSignal, pd models.PriceData, curre
 			_ = b.saveRiskEvent("order_confirm_error", err.Error())
 		}
 	}
+	if len(orders) > 0 {
+		b.markOrderExecuted(time.Now())
+	}
 
 	fmt.Println("订单执行成功")
 	time.Sleep(2 * time.Second)
 	newPos, _ := b.exchange.FetchPosition(cfg.Symbol)
 	fmt.Printf("更新后持仓: %v\n", newPos)
+	return true, "executed", nil
 }
 
 func (b *Bot) setRuntime(runAt time.Time, errMsg string, sig *models.TradeSignal, pd *models.PriceData, pos *models.Position) {
@@ -355,6 +526,7 @@ func (b *Bot) setRuntime(runAt time.Time, errMsg string, sig *models.TradeSignal
 		ps := *pos
 		b.runtime.CurrentPosition = &ps
 	}
+	b.syncRuntimeAutoLocked()
 }
 
 func (b *Bot) Snapshot() RuntimeSnapshot {
@@ -393,6 +565,15 @@ func (b *Bot) FetchBalance() (float64, error) {
 	return b.exchange.FetchBalance()
 }
 
+func (b *Bot) ActiveExchange() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.exchange == nil {
+		return "binance"
+	}
+	return b.exchange.ActiveExchange()
+}
+
 func (b *Bot) FetchPosition() (*models.Position, error) {
 	cfg := b.TradeConfig()
 	return b.exchange.FetchPosition(cfg.Symbol)
@@ -424,6 +605,24 @@ func (b *Bot) TradeRecords(limit int) []storage.TradeRecord {
 		return nil
 	}
 	return records
+}
+
+func (b *Bot) RiskSnapshot() (storage.RiskSnapshot, bool) {
+	if b.store == nil {
+		return storage.RiskSnapshot{}, false
+	}
+	out, err := b.store.LoadRiskSnapshot()
+	if err != nil {
+		return storage.RiskSnapshot{}, false
+	}
+	return out, true
+}
+
+func (b *Bot) EmitRiskEvent(eventType, details string) bool {
+	if err := b.saveRiskEvent(eventType, details); err != nil {
+		return false
+	}
+	return true
 }
 
 func (b *Bot) EquitySummary() (storage.EquitySummary, bool) {
@@ -631,6 +830,69 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 		}
 		next.LiquidationBufferPct = *update.LiquidationBufferPct
 	}
+	if update.AutoReviewEnabled != nil {
+		next.AutoReviewEnabled = *update.AutoReviewEnabled
+	}
+	if update.AutoReviewAfterOrderOnly != nil {
+		next.AutoReviewAfterOrderOnly = *update.AutoReviewAfterOrderOnly
+	}
+	if update.AutoReviewIntervalSec != nil {
+		if *update.AutoReviewIntervalSec < 60 || *update.AutoReviewIntervalSec > 86400 {
+			return current, fmt.Errorf("auto_review_interval_sec 需在 60-86400 之间")
+		}
+		next.AutoReviewIntervalSec = *update.AutoReviewIntervalSec
+	}
+	if update.AutoReviewVolatilityPct != nil {
+		if *update.AutoReviewVolatilityPct <= 0 || *update.AutoReviewVolatilityPct > 20 {
+			return current, fmt.Errorf("auto_review_volatility_pct 需在 (0,20] 之间")
+		}
+		next.AutoReviewVolatilityPct = *update.AutoReviewVolatilityPct
+	}
+	if update.AutoReviewDrawdownWarnPct != nil {
+		if *update.AutoReviewDrawdownWarnPct <= 0 || *update.AutoReviewDrawdownWarnPct > 1 {
+			return current, fmt.Errorf("auto_review_drawdown_warn_pct 需在 (0,1] 之间")
+		}
+		next.AutoReviewDrawdownWarnPct = *update.AutoReviewDrawdownWarnPct
+	}
+	if update.AutoReviewLossStreakWarn != nil {
+		if *update.AutoReviewLossStreakWarn < 1 || *update.AutoReviewLossStreakWarn > 100 {
+			return current, fmt.Errorf("auto_review_loss_streak_warn 需在 1-100 之间")
+		}
+		next.AutoReviewLossStreakWarn = *update.AutoReviewLossStreakWarn
+	}
+	if update.AutoReviewRiskReduceFactor != nil {
+		if *update.AutoReviewRiskReduceFactor <= 0 || *update.AutoReviewRiskReduceFactor > 1 {
+			return current, fmt.Errorf("auto_review_risk_reduce_factor 需在 (0,1] 之间")
+		}
+		next.AutoReviewRiskReduceFactor = *update.AutoReviewRiskReduceFactor
+	}
+	if update.AutoStrategyRegenEnabled != nil {
+		next.AutoStrategyRegenEnabled = *update.AutoStrategyRegenEnabled
+	}
+	if update.AutoStrategyRegenCooldownSec != nil {
+		if *update.AutoStrategyRegenCooldownSec < 300 || *update.AutoStrategyRegenCooldownSec > 604800 {
+			return current, fmt.Errorf("auto_strategy_regen_cooldown_sec 需在 300-604800 之间")
+		}
+		next.AutoStrategyRegenCooldownSec = *update.AutoStrategyRegenCooldownSec
+	}
+	if update.AutoStrategyRegenLossStreak != nil {
+		if *update.AutoStrategyRegenLossStreak < 1 || *update.AutoStrategyRegenLossStreak > 100 {
+			return current, fmt.Errorf("auto_strategy_regen_loss_streak 需在 1-100 之间")
+		}
+		next.AutoStrategyRegenLossStreak = *update.AutoStrategyRegenLossStreak
+	}
+	if update.AutoStrategyRegenDrawdownWarnPct != nil {
+		if *update.AutoStrategyRegenDrawdownWarnPct <= 0 || *update.AutoStrategyRegenDrawdownWarnPct > 1 {
+			return current, fmt.Errorf("auto_strategy_regen_drawdown_warn_pct 需在 (0,1] 之间")
+		}
+		next.AutoStrategyRegenDrawdownWarnPct = *update.AutoStrategyRegenDrawdownWarnPct
+	}
+	if update.AutoStrategyRegenMinRR != nil {
+		if *update.AutoStrategyRegenMinRR < 1 || *update.AutoStrategyRegenMinRR > 10 {
+			return current, fmt.Errorf("auto_strategy_regen_min_rr 需在 [1,10] 之间")
+		}
+		next.AutoStrategyRegenMinRR = *update.AutoStrategyRegenMinRR
+	}
 
 	if (update.Leverage != nil && next.Leverage != current.Leverage) || (update.Symbol != nil && next.Symbol != current.Symbol) {
 		if err := b.exchange.SetLeverage(next.Symbol, next.Leverage); err != nil {
@@ -639,19 +901,24 @@ func (b *Bot) UpdateTradeSettings(update TradeSettingsUpdate) (config.TradeConfi
 	}
 
 	b.mu.Lock()
-	b.cfg.Symbol = next.Symbol
-	b.cfg.HighConfidenceAmount = next.HighConfidenceAmount
-	b.cfg.LowConfidenceAmount = next.LowConfidenceAmount
-	b.cfg.PositionSizingMode = next.PositionSizingMode
-	b.cfg.HighConfidenceMarginPct = next.HighConfidenceMarginPct
-	b.cfg.LowConfidenceMarginPct = next.LowConfidenceMarginPct
-	b.cfg.Leverage = next.Leverage
-	b.cfg.MaxRiskPerTradePct = next.MaxRiskPerTradePct
-	b.cfg.MaxPositionPct = next.MaxPositionPct
-	b.cfg.MaxConsecutiveLosses = next.MaxConsecutiveLosses
-	b.cfg.MaxDailyLossPct = next.MaxDailyLossPct
-	b.cfg.MaxDrawdownPct = next.MaxDrawdownPct
-	b.cfg.LiquidationBufferPct = next.LiquidationBufferPct
+	b.baseCfg = next
+	*b.cfg = next
+	b.autoRiskProfile = "normal"
+	b.autoReviewReason = "手动更新参数，重置为基线"
+	if next.AutoReviewEnabled {
+		if next.AutoReviewAfterOrderOnly {
+			if !b.lastOrderExecutedAt.IsZero() {
+				b.nextAutoReviewAt = b.lastOrderExecutedAt.Add(time.Duration(autoReviewIntervalSec(next)) * time.Second)
+			} else {
+				b.nextAutoReviewAt = time.Time{}
+			}
+		} else {
+			b.nextAutoReviewAt = time.Now().Add(time.Duration(autoReviewIntervalSec(next)) * time.Second)
+		}
+	} else {
+		b.nextAutoReviewAt = time.Time{}
+	}
+	b.syncRuntimeAutoLocked()
 	b.mu.Unlock()
 	return b.TradeConfig(), nil
 }
@@ -783,7 +1050,7 @@ func (b *Bot) reconcileOpenOrders() error {
 	return nil
 }
 
-func (b *Bot) saveAIDecision(sig models.TradeSignal, pd models.PriceData, approvedSize float64, approved bool, riskReason string) {
+func (b *Bot) saveAIDecision(sig models.TradeSignal, pd models.PriceData, approvedSize float64, approved bool, riskReason string, executed bool) {
 	if b.store == nil {
 		return
 	}
@@ -802,6 +1069,7 @@ func (b *Bot) saveAIDecision(sig models.TradeSignal, pd models.PriceData, approv
 		"suggested_size": suggested,
 		"approved_size":  approvedSize,
 		"approved":       approved,
+		"executed":       executed,
 		"risk_reason":    riskReason,
 	})
 }
@@ -850,6 +1118,118 @@ func (b *Bot) saveRiskEvent(eventType, details string) error {
 		return nil
 	}
 	return b.store.SaveRiskEvent(eventType, details)
+}
+
+func (b *Bot) saveSkillStepAudit(
+	cycleID string,
+	step string,
+	status string,
+	reasonCode string,
+	model string,
+	start time.Time,
+	input any,
+	output any,
+	finalResult string,
+) {
+	if strings.TrimSpace(cycleID) == "" {
+		cycleID = fmt.Sprintf("cycle_%d", time.Now().UnixNano())
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "unknown"
+	}
+	if strings.TrimSpace(reasonCode) == "" {
+		reasonCode = "none"
+	}
+	if strings.TrimSpace(finalResult) == "" {
+		finalResult = "unknown"
+	}
+	payload := map[string]any{
+		"cycle_id":      cycleID,
+		"step":          step,
+		"status":        status,
+		"reason_code":   reasonCode,
+		"latency_ms":    time.Since(start).Milliseconds(),
+		"model":         strings.TrimSpace(model),
+		"prompt_tokens": 0,
+		"output_tokens": 0,
+		"total_tokens":  0,
+		"input":         input,
+		"output":        output,
+		"final_result":  finalResult,
+	}
+	_ = b.saveRiskEvent("skill_audit", mustJSON(payload))
+}
+
+func mustJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func validateSignalStrict(signal models.TradeSignal, price float64) (bool, string, string) {
+	sig := strings.ToUpper(strings.TrimSpace(signal.Signal))
+	switch sig {
+	case "BUY", "SELL", "HOLD":
+	default:
+		return false, "schema_invalid", "signal 仅支持 BUY/SELL/HOLD"
+	}
+	conf := strings.ToUpper(strings.TrimSpace(signal.Confidence))
+	switch conf {
+	case "HIGH", "MEDIUM", "LOW":
+	default:
+		return false, "schema_invalid", "confidence 仅支持 HIGH/MEDIUM/LOW"
+	}
+	if signal.StopLoss <= 0 || signal.TakeProfit <= 0 {
+		return false, "schema_invalid", "stop_loss/take_profit 必须大于 0"
+	}
+	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return false, "market_invalid", "价格无效"
+	}
+	if sig == "BUY" && !(signal.StopLoss < price && signal.TakeProfit > price) {
+		return false, "schema_invalid", "BUY 信号需满足 stop_loss < price < take_profit"
+	}
+	if sig == "SELL" && !(signal.TakeProfit < price && signal.StopLoss > price) {
+		return false, "schema_invalid", "SELL 信号需满足 take_profit < price < stop_loss"
+	}
+	return true, "ok", ""
+}
+
+func (b *Bot) preflightOrderPlan(signal models.TradeSignal, pd models.PriceData, tradeAmount float64) (bool, string, string, map[string]any) {
+	cfg := b.TradeConfig()
+	out := map[string]any{
+		"signal":       signal.Signal,
+		"confidence":   signal.Confidence,
+		"trade_amount": tradeAmount,
+		"price":        pd.Price,
+		"leverage":     cfg.Leverage,
+	}
+	if strings.ToUpper(strings.TrimSpace(signal.Signal)) == "HOLD" {
+		out["action"] = "hold"
+		return true, "ok", "", out
+	}
+	if tradeAmount <= 0 {
+		out["reason"] = "trade_amount <= 0"
+		return false, "order_plan_invalid", "开仓数量必须大于 0", out
+	}
+	if cfg.Leverage <= 0 {
+		out["reason"] = "invalid leverage"
+		return false, "order_plan_invalid", "杠杆配置无效", out
+	}
+	balance, err := b.exchange.FetchBalance()
+	if err != nil {
+		out["reason"] = err.Error()
+		return false, "balance_unavailable", "读取余额失败", out
+	}
+	requiredMargin := pd.Price * tradeAmount / float64(cfg.Leverage)
+	out["balance"] = balance
+	out["required_margin"] = requiredMargin
+	if requiredMargin > balance*0.8 {
+		out["reason"] = "insufficient_margin"
+		return false, "insufficient_margin", "保证金不足", out
+	}
+	return true, "ok", "", out
 }
 
 // WaitForNextPeriod 等待到下一个 15 分钟整点，返回需等待秒数

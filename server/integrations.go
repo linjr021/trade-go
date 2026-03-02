@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,9 @@ type llmIntegration struct {
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"api_key"`
 	Model     string `json:"model"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	CheckedAt string `json:"checked_at"`
 }
 
 type llmProduct struct {
@@ -52,6 +56,7 @@ type integrationStore struct {
 	LLMs             []llmIntegration      `json:"llms"`
 	LLMProducts      []llmProduct          `json:"llm_products"`
 	Exchanges        []exchangeIntegration `json:"exchanges"`
+	ActiveLLMID      string                `json:"active_llm_id"`
 	ActiveExchangeID string                `json:"active_exchange_id"`
 }
 
@@ -62,6 +67,7 @@ func (s *Service) handleIntegrations(w http.ResponseWriter, r *http.Request) {
 		active := findExchangeByID(cfg.Exchanges, cfg.ActiveExchangeID)
 		writeJSON(w, 200, map[string]any{
 			"llms":                cfg.LLMs,
+			"active_llm_id":       cfg.ActiveLLMID,
 			"llm_products":        cfg.LLMProducts,
 			"llm_product_catalog": llmProductCatalog(),
 			"exchanges":           cfg.Exchanges,
@@ -107,13 +113,19 @@ func (s *Service) handleAddLLMIntegration(w http.ResponseWriter, r *http.Request
 		writeError(w, 400, "LLM 验证失败: "+err.Error())
 		return
 	}
+	setLLMReachability(&req, "reachable", "API 可达（保存时已验证）")
 	req.ID = nextIntegrationIDLLM(store.LLMs)
 	store.LLMs = append(filterLLMByID(store.LLMs, req.ID), req)
+	store.ActiveLLMID = req.ID
 	if err := writeIntegrations(store); err != nil {
 		writeError(w, 500, "保存失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"added": req, "llms": store.LLMs})
+	if err := bindLLMAccount(s, req); err != nil {
+		writeError(w, 500, "保存成功但应用运行时失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"added": req, "llms": store.LLMs, "active_llm_id": store.ActiveLLMID})
 }
 
 func (s *Service) handleUpdateLLMIntegration(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +172,7 @@ func (s *Service) handleUpdateLLMIntegration(w http.ResponseWriter, r *http.Requ
 		writeError(w, 400, "LLM 验证失败: "+err.Error())
 		return
 	}
+	setLLMReachability(&req, "reachable", "API 可达（保存时已验证）")
 
 	if findLLMByID(store.LLMs, req.ID) == nil {
 		writeError(w, 404, "未找到指定智能体参数")
@@ -174,11 +187,16 @@ func (s *Service) handleUpdateLLMIntegration(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	store.LLMs = next
+	store.ActiveLLMID = req.ID
 	if err := writeIntegrations(store); err != nil {
 		writeError(w, 500, "保存失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"updated": req, "llms": store.LLMs})
+	if err := bindLLMAccount(s, req); err != nil {
+		writeError(w, 500, "保存成功但应用运行时失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"updated": req, "llms": store.LLMs, "active_llm_id": store.ActiveLLMID})
 }
 
 func (s *Service) handleDeleteLLMIntegration(w http.ResponseWriter, r *http.Request) {
@@ -205,14 +223,36 @@ func (s *Service) handleDeleteLLMIntegration(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	store.LLMs = filterLLMByID(store.LLMs, id)
+	if strings.TrimSpace(store.ActiveLLMID) == strings.TrimSpace(id) {
+		store.ActiveLLMID = ""
+	}
+	if strings.TrimSpace(store.ActiveLLMID) == "" && len(store.LLMs) > 0 {
+		store.ActiveLLMID = strings.TrimSpace(store.LLMs[0].ID)
+	}
 	if err := writeIntegrations(store); err != nil {
 		writeError(w, 500, "保存失败: "+err.Error())
 		return
 	}
+	if len(store.LLMs) == 0 {
+		if err := unbindLLMAccount(s); err != nil {
+			writeError(w, 500, "删除成功但清空运行时失败: "+err.Error())
+			return
+		}
+	} else {
+		active := findLLMByID(store.LLMs, store.ActiveLLMID)
+		if active == nil {
+			active = &store.LLMs[0]
+		}
+		if err := bindLLMAccount(s, *active); err != nil {
+			writeError(w, 500, "删除成功但应用运行时失败: "+err.Error())
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]any{
-		"message":    "智能体参数已删除",
-		"deleted_id": id,
-		"llms":       store.LLMs,
+		"message":       "智能体参数已删除",
+		"deleted_id":    id,
+		"llms":          store.LLMs,
+		"active_llm_id": store.ActiveLLMID,
 	})
 }
 
@@ -246,19 +286,25 @@ func (s *Service) handleTestLLMIntegration(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := validateLLMIntegration(*cfg); err != nil {
+		setLLMReachability(cfg, "unreachable", err.Error())
+		_ = writeIntegrations(store)
 		writeJSON(w, 200, map[string]any{
-			"id":        id,
-			"reachable": false,
-			"status":    "unreachable",
-			"message":   err.Error(),
+			"id":         id,
+			"reachable":  false,
+			"status":     "unreachable",
+			"message":    err.Error(),
+			"checked_at": cfg.CheckedAt,
 		})
 		return
 	}
+	setLLMReachability(cfg, "reachable", "API 可达")
+	_ = writeIntegrations(store)
 	writeJSON(w, 200, map[string]any{
-		"id":        id,
-		"reachable": true,
-		"status":    "reachable",
-		"message":   "API 可达",
+		"id":         id,
+		"reachable":  true,
+		"status":     "reachable",
+		"message":    "API 可达",
+		"checked_at": cfg.CheckedAt,
 	})
 }
 
@@ -721,18 +767,62 @@ func maskKey(v string) string {
 	return s[:4] + "****" + s[len(s)-4:]
 }
 
+func normalizeLLMReachabilityStatus(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "reachable":
+		return "reachable"
+	case "unreachable":
+		return "unreachable"
+	default:
+		return "unknown"
+	}
+}
+
+func setLLMReachability(item *llmIntegration, status, message string) {
+	if item == nil {
+		return
+	}
+	item.Status = normalizeLLMReachabilityStatus(status)
+	item.Message = strings.TrimSpace(message)
+	item.CheckedAt = time.Now().Format(time.RFC3339)
+}
+
 func validateLLMIntegration(cfg llmIntegration) error {
 	cfg.Product = normalizeLLMProduct(cfg.Product)
 	if err := validateLLMProduct(cfg.Product); err != nil {
 		return err
 	}
 	cfg.BaseURL = llmProductBaseURL(cfg.Product)
+	model := strings.TrimSpace(cfg.Model)
+	if model == "" {
+		return fmt.Errorf("模型不能为空")
+	}
+
+	// Prefer lightweight model-list validation to avoid slow chat completion round-trips.
+	models, _, _, _, reachable, _, modelErr := fetchLLMModelList(cfg.Product, cfg.BaseURL, cfg.APIKey)
+	if modelErr == nil && reachable {
+		if len(models) == 0 {
+			return nil
+		}
+		for _, item := range models {
+			if strings.TrimSpace(item) == model {
+				return nil
+			}
+		}
+		return fmt.Errorf("模型不可用: %s", model)
+	}
+
+	// Fallback for providers that may not expose /models in a compatible way.
+	if modelErr != nil && !shouldFallbackChatValidation(modelErr) {
+		return modelErr
+	}
+
 	endpoint, err := llmapi.ResolveChatEndpoint(cfg.BaseURL)
 	if err != nil {
 		return err
 	}
 	body := map[string]any{
-		"model": cfg.Model,
+		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": "reply with JSON only"},
 			{"role": "user", "content": "ping"},
@@ -747,7 +837,7 @@ func validateLLMIntegration(cfg llmIntegration) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	cli := &http.Client{Timeout: 10 * time.Second}
+	cli := &http.Client{Timeout: 20 * time.Second}
 	resp, err := cli.Do(req)
 	if err != nil {
 		return err
@@ -758,6 +848,17 @@ func validateLLMIntegration(cfg llmIntegration) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bs))
 	}
 	return nil
+}
+
+func shouldFallbackChatValidation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "http 404") || strings.Contains(msg, "模型路由不可达")
 }
 
 func validateLLMProduct(product string) error {
@@ -1018,25 +1119,24 @@ func validateExchangeIntegration(cfg exchangeIntegration) error {
 
 func readIntegrations() (integrationStore, error) {
 	var cfg integrationStore
-	fileMissing := false
+	var original integrationStore
 	raw, err := os.ReadFile(integrationsPath)
 	if err == nil {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			// Keep behavior robust: fallback to env snapshot when file is malformed.
 			cfg = integrationStore{}
 		}
-	} else if os.IsNotExist(err) {
-		fileMissing = true
 	} else {
 		// Keep endpoint available even when file read fails for transient reasons.
 		cfg = integrationStore{}
 	}
+	original = cfg
 
-	// Only bootstrap from env when local integration file does not exist yet.
-	if fileMissing {
-		mergeIntegrationsFromEnv(&cfg)
-	}
 	normalizeIntegrationStore(&cfg)
+	if !reflect.DeepEqual(original, cfg) {
+		_ = writeIntegrations(cfg)
+	}
+	syncEnvWithFrontendStore(cfg)
 	return cfg, nil
 }
 
@@ -1066,6 +1166,9 @@ func normalizeIntegrationStore(cfg *integrationStore) {
 		}
 	}
 	for i := range cfg.LLMs {
+		if isLegacyEnvBootstrapLLM(cfg.LLMs[i]) {
+			continue
+		}
 		cfg.LLMs[i].ProductID = ""
 		cfg.LLMs[i].Product = normalizeLLMProduct(cfg.LLMs[i].Product)
 		if cfg.LLMs[i].Product == "" {
@@ -1075,9 +1178,31 @@ func normalizeIntegrationStore(cfg *integrationStore) {
 			cfg.LLMs[i].Product = "chatgpt"
 		}
 		cfg.LLMs[i].BaseURL = llmProductBaseURL(cfg.LLMs[i].Product)
+		cfg.LLMs[i].Status = normalizeLLMReachabilityStatus(cfg.LLMs[i].Status)
+		cfg.LLMs[i].Message = strings.TrimSpace(cfg.LLMs[i].Message)
+		cfg.LLMs[i].CheckedAt = strings.TrimSpace(cfg.LLMs[i].CheckedAt)
+	}
+	nextLLMs := make([]llmIntegration, 0, len(cfg.LLMs))
+	for i := range cfg.LLMs {
+		if isLegacyEnvBootstrapLLM(cfg.LLMs[i]) {
+			continue
+		}
+		nextLLMs = append(nextLLMs, cfg.LLMs[i])
+	}
+	cfg.LLMs = nextLLMs
+	if strings.TrimSpace(cfg.ActiveLLMID) != "" {
+		if findLLMByID(cfg.LLMs, cfg.ActiveLLMID) == nil {
+			cfg.ActiveLLMID = ""
+		}
+	}
+	if strings.TrimSpace(cfg.ActiveLLMID) == "" && len(cfg.LLMs) > 0 {
+		cfg.ActiveLLMID = strings.TrimSpace(cfg.LLMs[0].ID)
 	}
 	nextExchanges := make([]exchangeIntegration, 0, len(cfg.Exchanges))
 	for i := range cfg.Exchanges {
+		if isLegacyEnvBootstrapExchange(cfg.Exchanges[i]) {
+			continue
+		}
 		cfg.Exchanges[i].ID = strings.TrimSpace(cfg.Exchanges[i].ID)
 		if cfg.Exchanges[i].ID == "" {
 			cfg.Exchanges[i].ID = nextIntegrationIDExchange(nextExchanges)
@@ -1106,64 +1231,95 @@ func normalizeIntegrationStore(cfg *integrationStore) {
 	}
 }
 
-func mergeIntegrationsFromEnv(cfg *integrationStore) {
-	if cfg == nil {
-		return
-	}
-	if len(cfg.LLMProducts) == 0 {
-		cfg.LLMProducts = defaultLLMProducts()
-	}
-	if len(cfg.LLMs) == 0 {
-		baseURL := strings.TrimSpace(os.Getenv("AI_BASE_URL"))
-		apiKey := strings.TrimSpace(os.Getenv("AI_API_KEY"))
-		model := strings.TrimSpace(os.Getenv("AI_MODEL"))
-		product := normalizeLLMProduct(os.Getenv("AI_PRODUCT"))
-		if product == "" {
-			product = inferLLMProductFromBaseURL(baseURL)
+func isLegacyEnvBootstrapLLM(item llmIntegration) bool {
+	name := strings.TrimSpace(strings.ToLower(item.Name))
+	return name == "env 智能体"
+}
+
+func isLegacyEnvBootstrapExchange(item exchangeIntegration) bool {
+	name := strings.TrimSpace(strings.ToLower(item.Name))
+	return name == "env binance" || name == "env okx"
+}
+
+func syncEnvWithFrontendStore(cfg integrationStore) {
+	updates := map[string]string{}
+
+	// LLM parameters: front-end integrations are source of truth.
+	if len(cfg.LLMs) > 0 {
+		active := findLLMByID(cfg.LLMs, cfg.ActiveLLMID)
+		if active == nil {
+			active = &cfg.LLMs[0]
 		}
+		product := normalizeLLMProduct(active.Product)
 		if err := validateLLMProduct(product); err != nil {
 			product = "chatgpt"
 		}
-		if baseURL != "" || apiKey != "" || model != "" {
-			cfg.LLMs = append(cfg.LLMs, llmIntegration{
-				ID:      "1",
-				Name:    "ENV 智能体",
-				Product: product,
-				BaseURL: llmProductBaseURL(product),
-				APIKey:  apiKey,
-				Model:   model,
-			})
+		baseURL := strings.TrimSpace(active.BaseURL)
+		if baseURL == "" {
+			baseURL = llmProductBaseURL(product)
+		}
+		updates["AI_PRODUCT"] = product
+		updates["AI_BASE_URL"] = baseURL
+		updates["AI_API_KEY"] = strings.TrimSpace(active.APIKey)
+		updates["AI_MODEL"] = strings.TrimSpace(active.Model)
+	} else {
+		updates["AI_PRODUCT"] = ""
+		updates["AI_BASE_URL"] = ""
+		updates["AI_API_KEY"] = ""
+		updates["AI_MODEL"] = ""
+	}
+
+	// Exchange parameters: front-end integrations are source of truth.
+	if len(cfg.Exchanges) > 0 {
+		active := findExchangeByID(cfg.Exchanges, cfg.ActiveExchangeID)
+		if active == nil {
+			active = &cfg.Exchanges[0]
+		}
+		exName := strings.ToLower(strings.TrimSpace(active.Exchange))
+		updates["ACTIVE_EXCHANGE"] = exName
+		switch exName {
+		case "okx":
+			updates["BINANCE_API_KEY"] = ""
+			updates["BINANCE_SECRET"] = ""
+			updates["OKX_API_KEY"] = strings.TrimSpace(active.APIKey)
+			updates["OKX_SECRET"] = strings.TrimSpace(active.Secret)
+			updates["OKX_PASSWORD"] = strings.TrimSpace(active.Passphase)
+		default:
+			updates["ACTIVE_EXCHANGE"] = "binance"
+			updates["BINANCE_API_KEY"] = strings.TrimSpace(active.APIKey)
+			updates["BINANCE_SECRET"] = strings.TrimSpace(active.Secret)
+			updates["OKX_API_KEY"] = ""
+			updates["OKX_SECRET"] = ""
+			updates["OKX_PASSWORD"] = ""
+		}
+	} else {
+		updates["ACTIVE_EXCHANGE"] = ""
+		updates["BINANCE_API_KEY"] = ""
+		updates["BINANCE_SECRET"] = ""
+		updates["OKX_API_KEY"] = ""
+		updates["OKX_SECRET"] = ""
+		updates["OKX_PASSWORD"] = ""
+	}
+	if len(updates) == 0 {
+		return
+	}
+	needWrite := false
+	for k, v := range updates {
+		if strings.TrimSpace(os.Getenv(k)) != strings.TrimSpace(v) {
+			needWrite = true
+			break
 		}
 	}
-	if len(cfg.Exchanges) == 0 {
-		binanceKey := strings.TrimSpace(os.Getenv("BINANCE_API_KEY"))
-		binanceSecret := strings.TrimSpace(os.Getenv("BINANCE_SECRET"))
-		if binanceKey != "" || binanceSecret != "" {
-			cfg.Exchanges = append(cfg.Exchanges, exchangeIntegration{
-				ID:       "1",
-				Name:     "ENV Binance",
-				Exchange: "binance",
-				APIKey:   binanceKey,
-				Secret:   binanceSecret,
-			})
-		}
-		okxKey := strings.TrimSpace(os.Getenv("OKX_API_KEY"))
-		okxSecret := strings.TrimSpace(os.Getenv("OKX_SECRET"))
-		okxPassphrase := strings.TrimSpace(os.Getenv("OKX_PASSWORD"))
-		if okxKey != "" || okxSecret != "" || okxPassphrase != "" {
-			cfg.Exchanges = append(cfg.Exchanges, exchangeIntegration{
-				ID:        strconv.Itoa(len(cfg.Exchanges) + 1),
-				Name:      "ENV OKX",
-				Exchange:  "okx",
-				APIKey:    okxKey,
-				Secret:    okxSecret,
-				Passphase: okxPassphrase,
-			})
-		}
+	if !needWrite {
+		return
 	}
-	if strings.TrimSpace(cfg.ActiveExchangeID) == "" && len(cfg.Exchanges) > 0 {
-		cfg.ActiveExchangeID = strings.TrimSpace(cfg.Exchanges[0].ID)
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return
 	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	applyRuntimeConfigFromEnv()
 }
 
 func defaultLLMProducts() []llmProduct {
@@ -1255,9 +1411,47 @@ func bindExchangeAccount(s *Service, cfg exchangeIntegration) error {
 	for k, v := range updates {
 		_ = os.Setenv(k, v)
 	}
-	// 当前执行引擎仍以 Binance API 交易为主；OKX 先用于账户接入与前端行情切换。
-	if exName == "okx" {
-		return nil
+	applyRuntimeConfigFromEnv()
+	return s.bot.ReloadClients()
+}
+
+func bindLLMAccount(s *Service, cfg llmIntegration) error {
+	product := normalizeLLMProduct(cfg.Product)
+	if err := validateLLMProduct(product); err != nil {
+		product = "chatgpt"
+	}
+	baseURL := strings.TrimSpace(cfg.BaseURL)
+	if baseURL == "" {
+		baseURL = llmProductBaseURL(product)
+	}
+	updates := map[string]string{
+		"AI_PRODUCT":  product,
+		"AI_BASE_URL": baseURL,
+		"AI_API_KEY":  strings.TrimSpace(cfg.APIKey),
+		"AI_MODEL":    strings.TrimSpace(cfg.Model),
+	}
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return err
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	applyRuntimeConfigFromEnv()
+	return s.bot.ReloadClients()
+}
+
+func unbindLLMAccount(s *Service) error {
+	updates := map[string]string{
+		"AI_PRODUCT":  "",
+		"AI_BASE_URL": "",
+		"AI_API_KEY":  "",
+		"AI_MODEL":    "",
+	}
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return err
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
 	}
 	applyRuntimeConfigFromEnv()
 	return s.bot.ReloadClients()

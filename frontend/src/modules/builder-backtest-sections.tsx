@@ -4,6 +4,42 @@ import { Tabs } from '@/components/ui/dashboard-primitives'
 import { MonthSelect } from '@/modules/month-select'
 import { StrategyBacktestTable } from '@/modules/trade-tables'
 
+const WORKFLOW_STEP_LABEL_MAP = {
+  'spec-builder': '规格构建',
+  'strategy-draft': '策略草案',
+  optimizer: '参数优化',
+  'risk-reviewer': '风险复核',
+  'release-packager': '发布打包',
+  SpecBuilder: '规格构建',
+  StrategyDraft: '策略草案',
+  Optimizer: '参数优化',
+  RiskReviewer: '风险复核',
+  ReleasePackager: '发布打包',
+}
+
+const WORKFLOW_CHANNEL_LABEL_MAP = {
+  strategy_generator: '策略生成',
+  chat_assistant: '参数助手',
+  default: '默认',
+}
+
+function workflowLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  return WORKFLOW_STEP_LABEL_MAP[raw] || raw
+}
+
+function workflowChainText(steps) {
+  if (!Array.isArray(steps) || !steps.length) return '-'
+  return steps.map((step) => workflowLabel(step)).join(' -> ')
+}
+
+function workflowChannelText(channel) {
+  const raw = String(channel || '').trim()
+  if (!raw) return '-'
+  return WORKFLOW_CHANNEL_LABEL_MAP[raw] || raw
+}
+
 export function BuilderPageSection(p) {
   const {
     builderTab,
@@ -75,7 +111,7 @@ export function BuilderPageSection(p) {
               <h4>策略生成参数</h4>
               <div className="form-grid">
                 <label>
-                  <span>交易习惯时长</span>
+                  <span>交易习惯时长（核心输入）</span>
                   <select value={habit} onChange={(e) => setHabit(e.target.value)}>
                     {habitOptions.map((h) => <option key={h} value={h}>{h}</option>)}
                   </select>
@@ -222,10 +258,23 @@ export function BuilderPageSection(p) {
                   <p className="muted">汉字长度：{renameHanCount}/10</p>
                   <p><b>交易对：</b>{selectedRule.symbol || '-'}</p>
                   <p><b>策略样式：</b>{selectedRule.style || '-'}</p>
-                  <p><b>最小盈亏比（盈利/亏损）：</b>{fmtNum(selectedRule.minRR, 2)}</p>
+                  <p><b>最小盈亏比（请求值）：</b>{fmtNum(selectedRule.minRR, 2)}</p>
+                  <p><b>最小盈亏比（最终生效）：</b>{
+                    selectedRule?.skillPackage?.spec_builder?.hard_constraints?.min_profit_loss_ratio != null
+                      ? fmtNum(Number(selectedRule.skillPackage.spec_builder.hard_constraints.min_profit_loss_ratio), 2)
+                      : fmtNum(selectedRule.minRR, 2)
+                  }</p>
                   <p><b>允许反转：</b>{selectedRule.allowReversal ? '是' : '否'}</p>
                   <p><b>低信心处理：</b>{selectedRule.lowConfAction || '-'}</p>
                   <p><b>方向偏好：</b>{selectedRule.directionBias || '-'}</p>
+                  <p><b>工作流版本：</b>{selectedRule?.skillPackage?.version || '-'}</p>
+                  <p><b>工作流链路：</b>{workflowChainText(selectedRule?.skillPackage?.workflow)}</p>
+                  <p><b>交易习惯画像：</b>{selectedRule?.skillPackage?.habit_profile?.label || '-'} / 周期 {selectedRule?.skillPackage?.habit_profile?.timeframe || '-'}</p>
+                  <p><b>硬边界：</b>
+                    最大杠杆 {selectedRule?.skillPackage?.spec_builder?.hard_constraints?.max_leverage ?? '-'}，
+                    最大回撤 {selectedRule?.skillPackage?.spec_builder?.hard_constraints?.max_drawdown_pct != null ? `${fmtNum(Number(selectedRule.skillPackage.spec_builder.hard_constraints.max_drawdown_pct) * 100, 2)}%` : '-'}，
+                    单笔风险 {selectedRule?.skillPackage?.spec_builder?.hard_constraints?.max_risk_per_trade_pct != null ? `${fmtNum(Number(selectedRule.skillPackage.spec_builder.hard_constraints.max_risk_per_trade_pct) * 100, 2)}%` : '-'}
+                  </p>
                   <p><b>策略偏好：</b>{selectedRule.preferencePrompt || '-'}</p>
                   <p><b>提示词：</b>{selectedRule.prompt}</p>
                   <p><b>AI 生成逻辑：</b>{selectedRule.logic}</p>
@@ -240,6 +289,421 @@ export function BuilderPageSection(p) {
           </div>
         )}
 
+      </section>
+    </section>
+  )
+}
+
+export function SkillWorkflowPageSection(p) {
+  const {
+    skillWorkflow,
+    loadingSkillWorkflow,
+    savingSkillWorkflow,
+    aiWorkflowTab,
+    setAiWorkflowTab,
+    aiWorkflowLogs,
+    aiWorkflowLogsLoading,
+    aiWorkflowLogChannel,
+    setAiWorkflowLogChannel,
+    aiWorkflowLogLimit,
+    setAiWorkflowLogLimit,
+    autoReviewFields,
+    systemSettings,
+    setSystemSettings,
+    autoReviewSaveHint,
+    savingAutoReviewSettings,
+    saveAutoReviewEnv,
+    updateSkillStepField,
+    updateSkillConstraintField,
+    updateSkillPromptField,
+    saveSkillWorkflowConfig,
+    resetSkillWorkflowConfig,
+    loadSkillWorkflowConfig,
+    loadAIWorkflowLogs,
+    fmtNum,
+    fmtTime,
+  } = p
+
+  return (
+    <section className="stack">
+      <section className="card">
+        <h3>AI 工作流</h3>
+        <Tabs
+          className="dashboard-tabs"
+          activeKey={aiWorkflowTab}
+          onChange={setAiWorkflowTab}
+          items={[
+            { key: 'config', label: '流程配置' },
+            { key: 'auto_review', label: '自动评估' },
+            { key: 'prompts', label: '提示词' },
+            { key: 'logs', label: '执行记录' },
+          ]}
+        />
+        {aiWorkflowTab === 'config' && (
+          <div className="builder-pane workflow-pane">
+            <section className="sub-window">
+              <div className="card-head">
+                <h4>流程图</h4>
+                <div className="inline-actions">
+                  <ActionButton
+                    className="btn-flat btn-flat-sky"
+                    loading={loadingSkillWorkflow}
+                    onClick={() => loadSkillWorkflowConfig(false)}
+                  >
+                    {loadingSkillWorkflow ? '刷新中...' : '刷新'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-amber"
+                    loading={savingSkillWorkflow}
+                    onClick={resetSkillWorkflowConfig}
+                  >
+                    {savingSkillWorkflow ? '处理中...' : '恢复默认'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-purple"
+                    loading={savingSkillWorkflow}
+                    onClick={saveSkillWorkflowConfig}
+                  >
+                    {savingSkillWorkflow ? '保存中...' : '保存流程参数'}
+                  </ActionButton>
+                </div>
+              </div>
+              <div className="workflow-flow">
+                {(skillWorkflow?.steps || []).map((step, idx, arr) => (
+                  <div key={`wf-${step.id}-${idx}`} className="workflow-chain-item">
+                    <article className={`workflow-node ${step.enabled ? 'is-enabled' : 'is-disabled'}`}>
+                      <div className="workflow-node-head">
+                        <b>{workflowLabel(step.name || step.id)}</b>
+                        <span>标识：{step.id}</span>
+                      </div>
+                      <p>{step.description || '-'}</p>
+                      <div className="workflow-node-meta">
+                        <span>超时 {step.timeout_sec}s</span>
+                        <span>重试 {step.max_retry}</span>
+                        <span>{step.on_fail === 'hard_fail' ? '失败即中断' : '失败回退HOLD'}</span>
+                      </div>
+                    </article>
+                    {idx < arr.length - 1 ? <div className="workflow-arrow">→</div> : null}
+                  </div>
+                ))}
+                {!Array.isArray(skillWorkflow?.steps) || !skillWorkflow.steps.length ? (
+                  <p className="muted">暂无工作流步骤。</p>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="sub-window">
+              <h4>步骤参数</h4>
+              <div className="workflow-steps-grid">
+                {(skillWorkflow?.steps || []).map((step) => (
+                  <article key={`wf-edit-${step.id}`} className="workflow-step-editor">
+                    <div className="workflow-step-editor-title">
+                      <b>{workflowLabel(step.name || step.id)}</b>
+                      <span>标识：{step.id}</span>
+                    </div>
+                    <div className="workflow-step-fields">
+                      <label className="workflow-check">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(step.enabled)}
+                          onChange={(e) => updateSkillStepField(step.id, 'enabled', e.target.checked)}
+                        />
+                        <span>启用</span>
+                      </label>
+                      <label>
+                        <span>超时(秒)</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="300"
+                          step="1"
+                          value={Number(step.timeout_sec || 1)}
+                          onChange={(e) => updateSkillStepField(step.id, 'timeout_sec', Number(e.target.value))}
+                        />
+                      </label>
+                      <label>
+                        <span>重试次数</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="5"
+                          step="1"
+                          value={Number(step.max_retry || 0)}
+                          onChange={(e) => updateSkillStepField(step.id, 'max_retry', Number(e.target.value))}
+                        />
+                      </label>
+                      <label>
+                        <span>失败动作</span>
+                        <select
+                          value={String(step.on_fail || 'hold')}
+                          onChange={(e) => updateSkillStepField(step.id, 'on_fail', e.target.value)}
+                        >
+                          <option value="hold">回退 HOLD</option>
+                          <option value="hard_fail">阻断执行</option>
+                        </select>
+                      </label>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="sub-window">
+              <h4>硬边界参数</h4>
+              <div className="form-grid workflow-constraints-grid">
+                <label>
+                  <span>最大杠杆上限</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="150"
+                    step="1"
+                    value={Number(skillWorkflow?.constraints?.max_leverage_cap || 150)}
+                    onChange={(e) => updateSkillConstraintField('max_leverage_cap', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>最大回撤上限(%)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="80"
+                    step="0.1"
+                    value={fmtNum(Number(skillWorkflow?.constraints?.max_drawdown_cap_pct || 0) * 100, 2)}
+                    onChange={(e) => updateSkillConstraintField('max_drawdown_cap_pct', Number(e.target.value) / 100)}
+                  />
+                </label>
+                <label>
+                  <span>单笔风险上限(%)</span>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="20"
+                    step="0.1"
+                    value={fmtNum(Number(skillWorkflow?.constraints?.max_risk_per_trade_cap_pct || 0) * 100, 2)}
+                    onChange={(e) => updateSkillConstraintField('max_risk_per_trade_cap_pct', Number(e.target.value) / 100)}
+                  />
+                </label>
+                <label>
+                  <span>最小盈亏比下限</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    step="0.1"
+                    value={Number(skillWorkflow?.constraints?.min_profit_loss_floor || 1.5)}
+                    onChange={(e) => updateSkillConstraintField('min_profit_loss_floor', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>步骤失败后禁止下单</span>
+                  <select
+                    value={skillWorkflow?.constraints?.block_trade_on_skill_fail ? 'true' : 'false'}
+                    onChange={(e) => updateSkillConstraintField('block_trade_on_skill_fail', e.target.value === 'true')}
+                  >
+                    <option value="true">是</option>
+                    <option value="false">否</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+          </div>
+        )}
+        {aiWorkflowTab === 'auto_review' && (
+          <div className="builder-pane workflow-pane">
+            <section className="sub-window">
+              <div className="card-head">
+                <h4>自动评估参数</h4>
+                <div className="inline-actions">
+                  <ActionButton
+                    className={`btn-flat btn-flat-blue save-config-btn ${savingAutoReviewSettings ? 'is-saving' : ''}`}
+                    onClick={saveAutoReviewEnv}
+                    loading={savingAutoReviewSettings}
+                  >
+                    {savingAutoReviewSettings ? '保存中...' : '保存自动评估参数'}
+                  </ActionButton>
+                </div>
+              </div>
+              <div className="form-grid workflow-constraints-grid">
+                {(autoReviewFields || []).map((f) => {
+                  const key = String(f?.key || '').trim()
+                  const isBool = key === 'AUTO_REVIEW_ENABLED' || key === 'AUTO_REVIEW_AFTER_ORDER_ONLY' || key === 'AUTO_STRATEGY_REGEN_ENABLED'
+                  const rawValue = String(systemSettings?.[key] || '')
+                  return (
+                    <label key={`auto-review-${key}`}>
+                      <span>{f.label}</span>
+                      {isBool ? (
+                        <select
+                          value={rawValue === 'false' ? 'false' : 'true'}
+                          onChange={(e) => setSystemSettings((prev) => ({ ...prev, [key]: e.target.value }))}
+                        >
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      ) : (
+                        <input
+                          type="number"
+                          step="any"
+                          value={rawValue}
+                          onChange={(e) => setSystemSettings((prev) => ({ ...prev, [key]: e.target.value }))}
+                        />
+                      )}
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="actions-row end">
+                {autoReviewSaveHint ? <span className="save-hint">{autoReviewSaveHint}</span> : null}
+              </div>
+            </section>
+          </div>
+        )}
+        {aiWorkflowTab === 'prompts' && (
+          <div className="builder-pane workflow-pane">
+            <section className="sub-window">
+              <div className="card-head">
+                <h4>工作流提示词</h4>
+                <div className="inline-actions">
+                  <ActionButton
+                    className="btn-flat btn-flat-sky"
+                    loading={loadingSkillWorkflow}
+                    onClick={() => loadSkillWorkflowConfig(false)}
+                  >
+                    {loadingSkillWorkflow ? '刷新中...' : '刷新'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-amber"
+                    loading={savingSkillWorkflow}
+                    onClick={resetSkillWorkflowConfig}
+                  >
+                    {savingSkillWorkflow ? '处理中...' : '恢复默认'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-purple"
+                    loading={savingSkillWorkflow}
+                    onClick={saveSkillWorkflowConfig}
+                  >
+                    {savingSkillWorkflow ? '保存中...' : '保存提示词'}
+                  </ActionButton>
+                </div>
+              </div>
+              <div className="workflow-prompts-grid">
+                <label>
+                  <span>策略生成系统提示词</span>
+                  <textarea
+                    value={String(skillWorkflow?.prompts?.strategy_generator_system_prompt || '')}
+                    onChange={(e) => updateSkillPromptField('strategy_generator_system_prompt', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>策略生成任务提示词</span>
+                  <textarea
+                    value={String(skillWorkflow?.prompts?.strategy_generator_task_prompt || '')}
+                    onChange={(e) => updateSkillPromptField('strategy_generator_task_prompt', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>策略生成约束清单（每行1条）</span>
+                  <textarea
+                    value={Array.isArray(skillWorkflow?.prompts?.strategy_generator_requirements)
+                      ? skillWorkflow.prompts.strategy_generator_requirements.join('\n')
+                      : ''}
+                    onChange={(e) => updateSkillPromptField('strategy_generator_requirements', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>实盘决策系统提示词</span>
+                  <textarea
+                    value={String(skillWorkflow?.prompts?.decision_system_prompt || '')}
+                    onChange={(e) => updateSkillPromptField('decision_system_prompt', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>实盘决策策略提示词</span>
+                  <textarea
+                    value={String(skillWorkflow?.prompts?.decision_policy_prompt || '')}
+                    onChange={(e) => updateSkillPromptField('decision_policy_prompt', e.target.value)}
+                  />
+                </label>
+              </div>
+            </section>
+          </div>
+        )}
+        {aiWorkflowTab === 'logs' && (
+          <div className="builder-pane workflow-pane">
+            <section className="sub-window">
+              <div className="card-head">
+                <h4>执行记录与令牌消耗</h4>
+                <div className="inline-actions">
+                  <ActionButton
+                    className="btn-flat btn-flat-sky"
+                    loading={aiWorkflowLogsLoading}
+                    onClick={() => loadAIWorkflowLogs(false)}
+                  >
+                    {aiWorkflowLogsLoading ? '加载中...' : '刷新'}
+                  </ActionButton>
+                </div>
+              </div>
+              <div className="workflow-log-toolbar">
+                <label>
+                  <span>通道</span>
+                  <select value={aiWorkflowLogChannel} onChange={(e) => setAiWorkflowLogChannel(e.target.value)}>
+                    <option value="strategy_generator">策略生成</option>
+                    <option value="chat_assistant">参数助手</option>
+                    <option value="default">默认</option>
+                    <option value="all">全部</option>
+                  </select>
+                </label>
+                <label>
+                  <span>记录条数</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="500"
+                    step="1"
+                    value={Number(aiWorkflowLogLimit || 50)}
+                    onChange={(e) => setAiWorkflowLogLimit(Number(e.target.value))}
+                  />
+                </label>
+              </div>
+              {!aiWorkflowLogs.length ? (
+                <p className="muted">暂无执行记录。</p>
+              ) : (
+                <div className="workflow-log-list">
+                  {aiWorkflowLogs.map((log) => (
+                    <article key={`wf-log-${log.id}-${log.created_at}`} className="workflow-log-item">
+                      <div className="workflow-log-head">
+                        <div className="workflow-log-meta">
+                          <b>#{log.id} · {workflowChannelText(log.channel)}</b>
+                          <span>{fmtTime(log.created_at)}</span>
+                          <span>模型：{log.model || '-'}</span>
+                        </div>
+                        <div className="workflow-log-token">
+                          <span>总令牌 {log.total_tokens ?? 0}</span>
+                          <span>输入令牌 {log.prompt_tokens ?? 0}</span>
+                          <span>输出令牌 {log.completion_tokens ?? 0}</span>
+                        </div>
+                      </div>
+                      <details className="workflow-log-detail">
+                        <summary>查看执行内容</summary>
+                        <div className="workflow-log-content">
+                          <div className="workflow-log-block">
+                            <h5>输入内容</h5>
+                            <pre>{log.prompt || '-'}</pre>
+                          </div>
+                          <div className="workflow-log-block">
+                            <h5>输出内容</h5>
+                            <pre>{log.completion || '-'}</pre>
+                          </div>
+                        </div>
+                      </details>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </section>
     </section>
   )

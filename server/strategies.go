@@ -16,8 +16,18 @@ func (s *Service) handleStrategies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	generatedNames := []string{}
+	for _, st := range readGeneratedStrategies().Strategies {
+		name := strings.TrimSpace(st.Name)
+		if name != "" {
+			generatedNames = append(generatedNames, name)
+		}
+	}
+	baseAvailable := []string{"ai_assisted", "trend_following", "mean_reversion", "breakout"}
+	mergedFallbackAvailable := append([]string{}, baseAvailable...)
+	mergedFallbackAvailable = append(mergedFallbackAvailable, generatedNames...)
 	fallback := map[string]any{
-		"available": []string{"ai_assisted", "trend_following", "mean_reversion", "breakout"},
+		"available": mergedFallbackAvailable,
 		"enabled":   []string{},
 	}
 	pyURL := strings.TrimSpace(config.Config.PyStrategyURL)
@@ -53,7 +63,11 @@ func (s *Service) handleStrategies(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = map[string]any{}
 	}
-	if _, ok := out["available"]; !ok {
+	if val, ok := out["available"]; ok {
+		merged := append([]string{}, parseStrategiesAny(val)...)
+		merged = append(merged, generatedNames...)
+		out["available"] = uniqueStrings(merged)
+	} else {
 		out["available"] = fallback["available"]
 	}
 	if _, ok := out["enabled"]; !ok {
@@ -61,4 +75,41 @@ func (s *Service) handleStrategies(w http.ResponseWriter, r *http.Request) {
 	}
 	out["source"] = fmt.Sprintf("%s/strategies", strings.TrimRight(pyURL, "/"))
 	writeJSON(w, http.StatusOK, out)
+}
+
+func parseStrategiesAny(v any) []string {
+	items, ok := v.([]interface{})
+	if !ok {
+		ss, ok2 := v.([]string)
+		if !ok2 {
+			return nil
+		}
+		return uniqueStrings(ss)
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		name := strings.TrimSpace(anyToString(it))
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return uniqueStrings(out)
+}
+
+func uniqueStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, item := range in {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, v)
+	}
+	return out
 }

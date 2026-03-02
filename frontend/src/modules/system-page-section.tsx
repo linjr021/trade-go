@@ -40,12 +40,6 @@ export function SystemPageSection(p) {
     bindExchangeAccount,
     deletingExchangeId,
     removeExchangeAccount,
-    promptSettings,
-    setPromptSettings,
-    resetPromptConfig,
-    resettingPrompts,
-    savePromptConfig,
-    savingPrompts,
   } = p
 
   return (
@@ -61,7 +55,6 @@ export function SystemPageSection(p) {
             { key: 'env', label: '运行配置' },
             { key: 'llm', label: '智能体参数' },
             { key: 'exchange', label: '交易所参数' },
-            { key: 'prompts', label: '提示词管理' },
           ]}
         />
 
@@ -128,7 +121,19 @@ export function SystemPageSection(p) {
                 </article>
                 <article className="metric-card">
                   <h4>智能体状态</h4>
-                  <p>{systemRuntime?.integration?.agent?.configured ? '已配置' : '未配置'}</p>
+                  <p>
+                    {systemRuntime?.integration?.agent?.status === 'connected'
+                      ? '可达'
+                      : systemRuntime?.integration?.agent?.status === 'warning'
+                        ? '不可达'
+                        : systemRuntime?.integration?.agent?.configured
+                          ? '已配置（未验证）'
+                          : '未配置'}
+                  </p>
+                </article>
+                <article className="metric-card">
+                  <h4>智能体检测信息</h4>
+                  <p>{systemRuntime?.integration?.agent?.message || '-'}</p>
                 </article>
                 <article className="metric-card">
                   <h4>模型</h4>
@@ -357,54 +362,6 @@ export function SystemPageSection(p) {
           </div>
         )}
 
-        {systemSubTab === 'prompts' && (
-          <div className="builder-pane">
-            <div className="prompt-grid">
-              <label>
-                <span>硬边界一：角色与输出约束</span>
-                <textarea
-                  value={promptSettings.trading_ai_system_prompt}
-                  onChange={(e) =>
-                    setPromptSettings((v) => ({ ...v, trading_ai_system_prompt: e.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                <span>硬边界二：风险与执行约束</span>
-                <textarea
-                  value={promptSettings.trading_ai_policy_prompt}
-                  onChange={(e) =>
-                    setPromptSettings((v) => ({ ...v, trading_ai_policy_prompt: e.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                <span>硬边界三：策略生成结构模板（支持 ${'{habit}'} / ${'{symbol}'} 变量）</span>
-                <textarea
-                  value={promptSettings.strategy_generator_prompt_template}
-                  onChange={(e) =>
-                    setPromptSettings((v) => ({
-                      ...v,
-                      strategy_generator_prompt_template: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-            </div>
-            <div className="actions-row end">
-              <ActionButton className="btn-flat btn-flat-amber" onClick={resetPromptConfig} loading={resettingPrompts}>
-                {resettingPrompts ? '恢复中...' : '恢复默认预设'}
-              </ActionButton>
-              <ActionButton
-                className={`btn-flat btn-flat-purple save-config-btn ${savingPrompts ? 'is-saving' : ''}`}
-                onClick={savePromptConfig}
-                loading={savingPrompts}
-              >
-                {savingPrompts ? '保存中...' : '保存提示词'}
-              </ActionButton>
-            </div>
-          </div>
-        )}
       </section>
     </section>
   )

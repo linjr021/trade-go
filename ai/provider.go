@@ -36,6 +36,19 @@ func NewClient() *Client {
 	}
 }
 
+type generatedStrategyStore struct {
+	Strategies []generatedStrategyHint `json:"strategies"`
+}
+
+type generatedStrategyHint struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	PreferencePrompt string `json:"preference_prompt"`
+	GeneratorPrompt  string `json:"generator_prompt"`
+	Logic            string `json:"logic"`
+	Basis            string `json:"basis"`
+}
+
 type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
@@ -57,8 +70,12 @@ type chatResponse struct {
 }
 
 func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
-	if c.strategyURL != "" {
-		sig, err := c.analyzeByPython(priceData, currentPos, lastSignals)
+	enabledStrategies := parseEnabledStrategiesFromEnv()
+	generatedHints := loadGeneratedStrategyHints(enabledStrategies)
+	hasGeneratedHints := len(generatedHints) > 0
+
+	if c.strategyURL != "" && !hasGeneratedHints {
+		sig, err := c.analyzeByPython(priceData, currentPos, lastSignals, enabledStrategies)
 		if err == nil {
 			return sig, nil
 		}
@@ -67,11 +84,14 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 			return fallbackSignal(priceData), nil
 		}
 	}
+	if c.strategyURL != "" && hasGeneratedHints {
+		fmt.Printf("检测到已启用生成策略(%d条)，切换通用AI执行以应用策略规则\n", len(generatedHints))
+	}
 	if c.apiKey == "" || c.aiBaseURL == "" {
 		return fallbackSignal(priceData), nil
 	}
 
-	prompt := buildPrompt(priceData, currentPos, lastSignals)
+	prompt := buildPrompt(priceData, currentPos, lastSignals, enabledStrategies, generatedHints)
 
 	cfg := config.Config.Trade
 	sysDefault := fmt.Sprintf(
@@ -133,14 +153,15 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 	return signal, nil
 }
 
-func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
+func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal, enabledStrategies []string) (models.TradeSignal, error) {
 	url := strings.TrimRight(c.strategyURL, "/") + "/analyze"
 	reqBody := map[string]interface{}{
-		"price_data":   priceData,
-		"current_pos":  currentPos,
-		"last_signals": lastSignals,
-		"timeframe":    config.Config.Trade.Timeframe,
-		"symbol":       config.Config.Trade.Symbol,
+		"price_data":         priceData,
+		"current_pos":        currentPos,
+		"last_signals":       lastSignals,
+		"timeframe":          config.Config.Trade.Timeframe,
+		"symbol":             config.Config.Trade.Symbol,
+		"enabled_strategies": enabledStrategies,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -244,7 +265,7 @@ func bbPosStr(pos float64) string {
 	return "中部"
 }
 
-func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models.TradeSignal) string {
+func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models.TradeSignal, enabledStrategies []string, generatedHints []generatedStrategyHint) string {
 	cfg := config.Config.Trade
 	t := pd.Technical
 	tr := pd.Trend
@@ -294,6 +315,35 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 		policyPrompt = "优先保护本金；信号冲突或不确定时返回HOLD；避免低置信度反转。"
 	}
 
+	enabledText := "未配置"
+	if len(enabledStrategies) > 0 {
+		enabledText = strings.Join(enabledStrategies, ", ")
+	}
+	generatedText := "无"
+	if len(generatedHints) > 0 {
+		var sb strings.Builder
+		for _, hint := range generatedHints {
+			name := strings.TrimSpace(hint.Name)
+			if name == "" {
+				name = strings.TrimSpace(hint.ID)
+			}
+			if name == "" {
+				name = "未命名策略"
+			}
+			sb.WriteString(fmt.Sprintf("策略[%s]\n", name))
+			if v := strings.TrimSpace(hint.PreferencePrompt); v != "" {
+				sb.WriteString("偏好: " + v + "\n")
+			}
+			if v := strings.TrimSpace(hint.Logic); v != "" {
+				sb.WriteString("逻辑: " + v + "\n")
+			}
+			if v := strings.TrimSpace(hint.Basis); v != "" {
+				sb.WriteString("依据: " + v + "\n")
+			}
+		}
+		generatedText = strings.TrimSpace(sb.String())
+	}
+
 	return fmt.Sprintf(`请作为量化交易决策模型，基于以下%s %s数据进行判断。
 你需要先判断市场状态（趋势/震荡/高波动），再决定信号。若信号不清晰，必须返回HOLD。
 
@@ -317,12 +367,13 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 
 %s
 
-【风控与执行约束】
-1. 你只负责方向和止盈止损建议，仓位大小由Risk Engine决定。
-2. 非高置信度时避免频繁反转；若与当前持仓冲突且证据不足，应优先HOLD。
-3. 止损必须有效（>0），且不应过近；止盈应与止损形成合理风险收益比（建议>=1.2）。
-4. 当趋势与动量冲突或波动异常时，优先保守。
-5. 不要输出固定下单金额/固定仓位建议；实际下单数量、保证金比例、杠杆以系统实盘设置为准。
+	【风控与执行约束】
+	1. 你只负责方向和止盈止损建议，仓位大小由Risk Engine决定。
+	2. 非高置信度时避免频繁反转；若与当前持仓冲突且证据不足，应优先HOLD。
+	3. 止损必须有效（>0），且不应过近；止盈应与止损形成合理风险收益比（建议>=1.2）。
+	4. 当趋势与动量冲突或波动异常时，优先保守。
+	5. 不要输出固定下单金额/固定仓位建议；实际下单数量、保证金比例、杠杆以系统实盘设置为准。
+	6. 生成策略中出现的绝对价位仅作历史参考，必须结合当前行情与实时关键位重新计算入场区、止损和止盈；不得机械复用过时价位。
 
 【当前实盘参数（仅供参考，执行以系统为准）】
 - 仓位模式: %s
@@ -331,6 +382,12 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 - 杠杆: %d
 
 【策略偏好补充】
+%s
+
+【已启用执行策略】
+%s
+
+【生成策略约束（若有）】
 %s
 
 【当前行情快照】
@@ -353,8 +410,89 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 		cfg.PositionSizingMode, cfg.HighConfidenceAmount, cfg.LowConfidenceAmount,
 		cfg.HighConfidenceMarginPct*100, cfg.LowConfidenceMarginPct*100, cfg.Leverage,
 		policyPrompt,
+		enabledText,
+		generatedText,
 		pd.Price, pd.Timestamp.Format("2006-01-02 15:04:05"),
 		pd.High, pd.Low, pd.Volume, pd.PriceChange,
 		posText, posLoss,
 	)
+}
+
+func parseEnabledStrategiesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("PY_STRATEGY_ENABLED"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, v)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func loadGeneratedStrategyHints(enabled []string) []generatedStrategyHint {
+	if len(enabled) == 0 {
+		return nil
+	}
+	raw, err := os.ReadFile("data/generated_strategies.json")
+	if err != nil {
+		return nil
+	}
+	var store generatedStrategyStore
+	if err := json.Unmarshal(raw, &store); err != nil {
+		return nil
+	}
+	if len(store.Strategies) == 0 {
+		return nil
+	}
+	byKey := map[string]generatedStrategyHint{}
+	for _, item := range store.Strategies {
+		id := strings.ToLower(strings.TrimSpace(item.ID))
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		if id != "" {
+			byKey[id] = item
+		}
+		if name != "" {
+			byKey[name] = item
+		}
+	}
+	out := make([]generatedStrategyHint, 0, len(enabled))
+	seen := map[string]bool{}
+	for _, sel := range enabled {
+		key := strings.ToLower(strings.TrimSpace(sel))
+		if key == "" {
+			continue
+		}
+		item, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		idKey := strings.ToLower(strings.TrimSpace(item.ID))
+		if idKey == "" {
+			idKey = strings.ToLower(strings.TrimSpace(item.Name))
+		}
+		if seen[idKey] {
+			continue
+		}
+		seen[idKey] = true
+		out = append(out, item)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
 }

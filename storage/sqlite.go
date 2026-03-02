@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"trade-go/config"
 
 	_ "modernc.org/sqlite"
 )
@@ -38,6 +39,7 @@ type StrategyComboScore struct {
 type TradeRecord struct {
 	ID            int64   `json:"id"`
 	Ts            string  `json:"ts"`
+	Exchange      string  `json:"exchange"`
 	Symbol        string  `json:"symbol"`
 	Signal        string  `json:"signal"`
 	Confidence    string  `json:"confidence"`
@@ -165,6 +167,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS ai_decisions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts TEXT NOT NULL,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			signal TEXT,
 			confidence TEXT,
 			reason TEXT,
@@ -174,6 +177,7 @@ func (s *Store) migrate() error {
 			suggested_size REAL,
 			approved_size REAL,
 			approved INTEGER,
+			executed INTEGER DEFAULT 0,
 			risk_reason TEXT,
 			strategy_combo TEXT,
 			strategy_score REAL
@@ -181,6 +185,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS orders (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			order_id TEXT UNIQUE,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			symbol TEXT,
 			side TEXT,
 			size REAL,
@@ -193,6 +198,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS fills (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			fill_id TEXT UNIQUE,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			order_id TEXT,
 			symbol TEXT,
 			side TEXT,
@@ -203,6 +209,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS position_snapshots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts TEXT NOT NULL,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			symbol TEXT,
 			side TEXT,
 			size REAL,
@@ -213,6 +220,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS equity_curve (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts TEXT NOT NULL,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			balance REAL,
 			unrealized_pnl REAL,
 			equity REAL
@@ -220,6 +228,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS risk_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts TEXT NOT NULL,
+			exchange TEXT NOT NULL DEFAULT 'binance',
 			event_type TEXT,
 			details TEXT
 		);`,
@@ -300,6 +309,13 @@ func (s *Store) migrateCompat() error {
 	alterStmts := []string{
 		`ALTER TABLE ai_decisions ADD COLUMN strategy_combo TEXT;`,
 		`ALTER TABLE ai_decisions ADD COLUMN strategy_score REAL;`,
+		`ALTER TABLE ai_decisions ADD COLUMN exchange TEXT DEFAULT 'binance';`,
+		`ALTER TABLE ai_decisions ADD COLUMN executed INTEGER DEFAULT 0;`,
+		`ALTER TABLE orders ADD COLUMN exchange TEXT DEFAULT 'binance';`,
+		`ALTER TABLE fills ADD COLUMN exchange TEXT DEFAULT 'binance';`,
+		`ALTER TABLE position_snapshots ADD COLUMN exchange TEXT DEFAULT 'binance';`,
+		`ALTER TABLE equity_curve ADD COLUMN exchange TEXT DEFAULT 'binance';`,
+		`ALTER TABLE risk_events ADD COLUMN exchange TEXT DEFAULT 'binance';`,
 		`ALTER TABLE backtest_run_records ADD COLUMN order_basis TEXT;`,
 		`ALTER TABLE backtest_run_records ADD COLUMN stop_loss REAL;`,
 		`ALTER TABLE backtest_run_records ADD COLUMN take_profit REAL;`,
@@ -313,6 +329,35 @@ func (s *Store) migrateCompat() error {
 			return err
 		}
 	}
+	fillExchangeDefaults := []string{
+		`UPDATE ai_decisions SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+		`UPDATE orders SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+		`UPDATE fills SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+		`UPDATE position_snapshots SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+		`UPDATE equity_curve SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+		`UPDATE risk_events SET exchange='binance' WHERE exchange IS NULL OR TRIM(exchange)='';`,
+	}
+	for _, stmt := range fillExchangeDefaults {
+		if _, err := s.db.Exec(stmt); err != nil {
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "no such column") || strings.Contains(msg, "no such table") {
+				continue
+			}
+			return err
+		}
+	}
+	exchangeIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_ai_decisions_exchange_ts ON ai_decisions(exchange, ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_orders_exchange_status_updated_at ON orders(exchange, status, updated_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_position_snapshots_exchange_ts ON position_snapshots(exchange, ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_equity_curve_exchange_ts ON equity_curve(exchange, ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_risk_events_exchange_ts ON risk_events(exchange, ts);`,
+	}
+	for _, stmt := range exchangeIndexes {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -321,12 +366,14 @@ func (s *Store) SaveAIDecision(ts time.Time, decision map[string]any) error {
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO ai_decisions (ts, signal, confidence, reason, price, stop_loss, take_profit, suggested_size, approved_size, approved, risk_reason, strategy_combo, strategy_score)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO ai_decisions (ts, exchange, signal, confidence, reason, price, stop_loss, take_profit, suggested_size, approved_size, approved, executed, risk_reason, strategy_combo, strategy_score)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ts.Format(time.RFC3339),
+		currentExchange(),
 		decision["signal"], decision["confidence"], decision["reason"],
 		decision["price"], decision["stop_loss"], decision["take_profit"],
 		decision["suggested_size"], decision["approved_size"], boolToInt(decision["approved"] == true),
+		boolToInt(decision["executed"] == true),
 		decision["risk_reason"], decision["strategy_combo"], decision["strategy_score"],
 	)
 	return err
@@ -339,13 +386,14 @@ func (s *Store) SaveOrder(orderID, symbol, side string, size float64, reduceOnly
 	raw, _ := json.Marshal(payload)
 	now := time.Now().Format(time.RFC3339)
 	_, err := s.db.Exec(
-		`INSERT INTO orders (order_id, symbol, side, size, reduce_only, status, payload, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO orders (order_id, exchange, symbol, side, size, reduce_only, status, payload, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(order_id) DO UPDATE SET
+		 	exchange=excluded.exchange,
 		 	status=excluded.status,
 		 	payload=excluded.payload,
 		 	updated_at=excluded.updated_at`,
-		orderID, symbol, side, size, boolToInt(reduceOnly), status, string(raw), now, now,
+		orderID, currentExchange(), symbol, side, size, boolToInt(reduceOnly), status, string(raw), now, now,
 	)
 	return err
 }
@@ -355,9 +403,9 @@ func (s *Store) SavePositionSnapshot(symbol string, posSide string, size, entry,
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO position_snapshots (ts, symbol, side, size, entry_price, unrealized_pnl, leverage)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		time.Now().Format(time.RFC3339), symbol, posSide, size, entry, upl, leverage,
+		`INSERT INTO position_snapshots (ts, exchange, symbol, side, size, entry_price, unrealized_pnl, leverage)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().Format(time.RFC3339), currentExchange(), symbol, posSide, size, entry, upl, leverage,
 	)
 	return err
 }
@@ -370,10 +418,10 @@ func (s *Store) SaveFill(fillID, orderID, symbol, side string, size, price float
 		ts = time.Now().Format(time.RFC3339)
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO fills (fill_id, order_id, symbol, side, size, price, ts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO fills (fill_id, exchange, order_id, symbol, side, size, price, ts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(fill_id) DO NOTHING`,
-		fillID, orderID, symbol, side, size, price, ts,
+		fillID, currentExchange(), orderID, symbol, side, size, price, ts,
 	)
 	return err
 }
@@ -384,8 +432,8 @@ func (s *Store) SaveEquity(balance, upl float64) error {
 	}
 	equity := balance + upl
 	_, err := s.db.Exec(
-		`INSERT INTO equity_curve (ts, balance, unrealized_pnl, equity) VALUES (?, ?, ?, ?)`,
-		time.Now().Format(time.RFC3339), balance, upl, equity,
+		`INSERT INTO equity_curve (ts, exchange, balance, unrealized_pnl, equity) VALUES (?, ?, ?, ?, ?)`,
+		time.Now().Format(time.RFC3339), currentExchange(), balance, upl, equity,
 	)
 	return err
 }
@@ -395,8 +443,8 @@ func (s *Store) SaveRiskEvent(eventType, details string) error {
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO risk_events (ts, event_type, details) VALUES (?, ?, ?)`,
-		time.Now().Format(time.RFC3339), eventType, details,
+		`INSERT INTO risk_events (ts, exchange, event_type, details) VALUES (?, ?, ?, ?)`,
+		time.Now().Format(time.RFC3339), currentExchange(), eventType, details,
 	)
 	return err
 }
@@ -407,26 +455,27 @@ func (s *Store) LoadRiskSnapshot() (RiskSnapshot, error) {
 	}
 	var out RiskSnapshot
 	today := time.Now().Format("2006-01-02")
+	ex := currentExchange()
 
 	err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(unrealized_pnl),0) FROM position_snapshots WHERE substr(ts,1,10)=?`,
-		today,
+		`SELECT COALESCE(SUM(unrealized_pnl),0) FROM position_snapshots WHERE exchange=? AND substr(ts,1,10)=?`,
+		ex, today,
 	).Scan(&out.TodayPnL)
 	if err != nil {
 		return out, err
 	}
 
-	err = s.db.QueryRow(`SELECT COALESCE(MAX(equity),0) FROM equity_curve`).Scan(&out.PeakEquity)
+	err = s.db.QueryRow(`SELECT COALESCE(MAX(equity),0) FROM equity_curve WHERE exchange=?`, ex).Scan(&out.PeakEquity)
 	if err != nil {
 		return out, err
 	}
-	err = s.db.QueryRow(`SELECT COALESCE(equity,0) FROM equity_curve ORDER BY id DESC LIMIT 1`).Scan(&out.CurrentEquity)
+	err = s.db.QueryRow(`SELECT COALESCE(equity,0) FROM equity_curve WHERE exchange=? ORDER BY id DESC LIMIT 1`, ex).Scan(&out.CurrentEquity)
 	if err != nil {
 		return out, err
 	}
 
 	// 连续亏损（简化）：按最近持仓快照未实现盈亏连续为负计数。
-	rows, err := s.db.Query(`SELECT unrealized_pnl FROM position_snapshots ORDER BY id DESC LIMIT 30`)
+	rows, err := s.db.Query(`SELECT unrealized_pnl FROM position_snapshots WHERE exchange=? ORDER BY id DESC LIMIT 30`, ex)
 	if err != nil {
 		return out, err
 	}
@@ -454,7 +503,10 @@ func (s *Store) OpenOrders() ([]string, error) {
 	if s == nil {
 		return nil, nil
 	}
-	rows, err := s.db.Query(`SELECT order_id FROM orders WHERE status IN ('live','partially_filled') ORDER BY id DESC LIMIT 200`)
+	rows, err := s.db.Query(
+		`SELECT order_id FROM orders WHERE exchange=? AND status IN ('live','partially_filled') ORDER BY id DESC LIMIT 200`,
+		currentExchange(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -583,17 +635,20 @@ func (s *Store) RecentTradeRecords(limit int) ([]TradeRecord, error) {
 	if limit > 200 {
 		limit = 200
 	}
+	ex := currentExchange()
 	rows, err := s.db.Query(
 		`SELECT
-			d.id, d.ts, d.signal, d.confidence, d.strategy_combo, d.approved, d.approved_size,
+			d.id, d.ts, d.exchange, d.signal, d.confidence, d.strategy_combo, d.approved, d.approved_size,
 			d.price, d.stop_loss, d.take_profit, d.risk_reason,
-			(SELECT p.symbol FROM position_snapshots p WHERE p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS symbol,
-			(SELECT p.side FROM position_snapshots p WHERE p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS position_side,
-			(SELECT p.size FROM position_snapshots p WHERE p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS position_size,
-			(SELECT p.unrealized_pnl FROM position_snapshots p WHERE p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS unrealized_pnl
+			(SELECT p.symbol FROM position_snapshots p WHERE p.exchange=d.exchange AND p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS symbol,
+			(SELECT p.side FROM position_snapshots p WHERE p.exchange=d.exchange AND p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS position_side,
+			(SELECT p.size FROM position_snapshots p WHERE p.exchange=d.exchange AND p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS position_size,
+			(SELECT p.unrealized_pnl FROM position_snapshots p WHERE p.exchange=d.exchange AND p.ts <= d.ts ORDER BY p.id DESC LIMIT 1) AS unrealized_pnl
 		FROM ai_decisions d
+		WHERE d.exchange=? AND d.executed=1
 		ORDER BY d.id DESC
 		LIMIT ?`,
+		ex,
 		limit,
 	)
 	if err != nil {
@@ -604,20 +659,21 @@ func (s *Store) RecentTradeRecords(limit int) ([]TradeRecord, error) {
 	var out []TradeRecord
 	for rows.Next() {
 		var (
-			item                   TradeRecord
-			symbol, side, riskNote sql.NullString
-			signal, conf, combo    sql.NullString
-			price, sl, tp, size    sql.NullFloat64
-			pSize, upl             sql.NullFloat64
-			approved               sql.NullInt64
+			item                             TradeRecord
+			exchange, symbol, side, riskNote sql.NullString
+			signal, conf, combo              sql.NullString
+			price, sl, tp, size              sql.NullFloat64
+			pSize, upl                       sql.NullFloat64
+			approved                         sql.NullInt64
 		)
 		if err := rows.Scan(
-			&item.ID, &item.Ts, &signal, &conf, &combo, &approved, &size,
+			&item.ID, &item.Ts, &exchange, &signal, &conf, &combo, &approved, &size,
 			&price, &sl, &tp, &riskNote,
 			&symbol, &side, &pSize, &upl,
 		); err != nil {
 			return nil, err
 		}
+		item.Exchange = exchange.String
 		item.Symbol = symbol.String
 		item.Signal = signal.String
 		item.Confidence = conf.String
@@ -653,7 +709,10 @@ func (s *Store) EquitySummary() (EquitySummary, error) {
 		return EquitySummary{}, nil
 	}
 	var out EquitySummary
-	rows, err := s.db.Query(`SELECT ts, equity, balance FROM equity_curve ORDER BY id ASC`)
+	rows, err := s.db.Query(
+		`SELECT ts, equity, balance FROM equity_curve WHERE exchange=? ORDER BY id ASC`,
+		currentExchange(),
+	)
 	if err != nil {
 		return out, err
 	}
@@ -716,7 +775,8 @@ func (s *Store) EquityTrendSince(since time.Time) ([]EquityPoint, error) {
 		return nil, nil
 	}
 	rows, err := s.db.Query(
-		`SELECT ts, equity FROM equity_curve WHERE ts >= ? ORDER BY id ASC`,
+		`SELECT ts, equity FROM equity_curve WHERE exchange=? AND ts >= ? ORDER BY id ASC`,
+		currentExchange(),
 		since.Format(time.RFC3339),
 	)
 	if err != nil {
@@ -748,7 +808,8 @@ func (s *Store) DailyPnLByMonth(month string) ([]DailyPnL, error) {
 	}
 	end := start.AddDate(0, 1, 0)
 	rows, err := s.db.Query(
-		`SELECT ts, equity FROM equity_curve WHERE ts >= ? AND ts < ? ORDER BY id ASC`,
+		`SELECT ts, equity FROM equity_curve WHERE exchange=? AND ts >= ? AND ts < ? ORDER BY id ASC`,
+		currentExchange(),
 		start.Format(time.RFC3339), end.Format(time.RFC3339),
 	)
 	if err != nil {
@@ -989,6 +1050,17 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func currentExchange() string {
+	if config.Config == nil {
+		return "binance"
+	}
+	ex := strings.ToLower(strings.TrimSpace(config.Config.ActiveExchange))
+	if ex == "okx" {
+		return "okx"
+	}
+	return "binance"
 }
 
 func (s *Store) String() string {

@@ -1,6 +1,6 @@
 # trade-go
 
-基于 Binance USDT 永续的 AI 量化交易系统（Python 策略 + Go 后台 + React 19 前端）
+支持 Binance / OKX 的 AI 量化交易系统（Python 策略 + Go 后台 + React 19 前端）
 
 ## 技术栈
 
@@ -18,7 +18,8 @@
 - 策略服务（Python）：
   - Python 3（标准库 `http.server` + `urllib`，无额外框架依赖）
 - 交易与数据：
-  - Binance USDT 永续（REST + WebSocket）
+  - Binance / OKX 永续（REST）
+  - Binance 公共 WebSocket 行情
   - SQLite（`modernc.org/sqlite`）
 
 ## 功能说明
@@ -26,14 +27,16 @@
 - 支持两种执行模式：
   - `MODE=cli`：固定周期执行（默认每 15 分钟）
   - `MODE=web`：WebSocket 事件驱动实时执行
-- 从 Binance 拉取 K 线数据（默认 `15m`，`96` 根）
+- 按当前交易所（Binance/OKX）拉取 K 线数据（默认 `15m`，`96` 根）
 - 计算技术指标：SMA/EMA、MACD、RSI、布林带、成交量、支撑阻力
 - 优先调用 Python 策略服务输出交易信号（失败可回退通用 AI 接口）
-- 自动在 Binance USDT 永续进行市价开平仓
+- 自动在当前交易所永续进行市价开平仓
 - 风控引擎统一决定仓位（AI 只负责方向）
 - 订单状态确认、部分成交处理、重启后订单状态恢复
 - SQLite 持久化：AI 决策、订单、成交、持仓快照、权益曲线、风险事件
-- Binance 公共 WebSocket 行情：ticker / kline / funding
+- Binance 公共 WebSocket 行情：ticker / kline / funding（前端实时图）
+- 策略生成支持“交易习惯”驱动，并输出技能化策略包（SpecBuilder/StrategyDraft/Optimizer/RiskReviewer/ReleasePackager）
+- 新增 AI 工作流管理：流程图展示 + 在线修改步骤参数/硬边界/提示词（持久化到 `data/skill_workflow.json`）
 
 ## 项目结构
 
@@ -43,12 +46,15 @@ trade-go/
 ├── app/app.go           # 运行模式编排与实时触发
 ├── server/server.go     # HTTP API 服务
 ├── trader/bot.go        # 交易主流程（信号、风控、执行）
-├── exchange/okx.go      # Binance REST 客户端（保留原文件名）
+├── exchange/client.go   # 交易所工厂与统一客户端
+├── exchange/binance.go  # Binance 实现
+├── exchange/okx.go      # OKX 实现
 ├── market/ws.go         # Binance WebSocket 行情流
 ├── risk/engine.go       # 风控引擎
 ├── storage/sqlite.go    # SQLite 持久化
 ├── ai/provider.go       # 策略客户端（Python优先，通用AI兜底）
 ├── strategy_py/         # Python 策略服务
+├── skills/              # 技能化策略流程定义（SKILL + schema）
 ├── frontend/            # React 19 前端（Vite）
 └── .env.example         # 环境变量示例
 ```
@@ -107,6 +113,8 @@ npm run typecheck
 - `GET /api/signals?limit=30`：最近信号历史
 - `POST /api/llm/chat`：与 AI 对话并按白名单自动调整交易参数
 - `POST /api/settings`：更新仓位参数、杠杆、风控阈值
+- `GET/POST /api/skill-workflow`：读取/保存 AI 工作流参数（支持恢复默认）
+- `GET /api/llm-usage/logs`：查看 AI 工作流执行记录与 token 消耗（支持按通道筛选）
 - `POST /api/run`：立即执行一次策略
 - `POST /api/scheduler/start`：启动定时调度（非实时模式）
 - `POST /api/scheduler/stop`：停止定时调度

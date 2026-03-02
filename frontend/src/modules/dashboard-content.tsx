@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { AssetsPageSection } from '@/modules/assets-page-section'
-import { BacktestPageSection, BuilderPageSection } from '@/modules/builder-backtest-sections'
+import { BacktestPageSection, BuilderPageSection, SkillWorkflowPageSection } from '@/modules/builder-backtest-sections'
 import { LivePageSection, PaperPageSection } from '@/modules/live-paper-sections'
 import { SystemPageSection } from '@/modules/system-page-section'
 import {
@@ -16,6 +16,10 @@ import { normalizeDecimal, normalizeLeverage } from '@/modules/trade-utils'
 import { fmtNum, fmtPct, fmtTime } from '@/modules/format'
 
 export function DashboardContent({ c, renderOverviewCards }) {
+  const autoReviewGroup = envFieldGroups.find((group) => String(group?.title || '') === '自动评估')
+  const autoReviewFields = Array.isArray(autoReviewGroup?.fields) ? autoReviewGroup.fields : []
+  const systemEnvGroups = envFieldGroups.filter((group) => String(group?.title || '') !== '自动评估')
+
   return (
     <>
       {c.menu === 'live' && (
@@ -142,6 +146,37 @@ export function DashboardContent({ c, renderOverviewCards }) {
         />
       )}
 
+      {c.menu === 'skill_workflow' && (
+        <SkillWorkflowPageSection
+          skillWorkflow={c.skillWorkflow}
+          loadingSkillWorkflow={c.loadingSkillWorkflow}
+          savingSkillWorkflow={c.savingSkillWorkflow}
+          aiWorkflowTab={c.aiWorkflowTab}
+          setAiWorkflowTab={c.setAiWorkflowTab}
+          aiWorkflowLogs={c.aiWorkflowLogs}
+          aiWorkflowLogsLoading={c.aiWorkflowLogsLoading}
+          aiWorkflowLogChannel={c.aiWorkflowLogChannel}
+          setAiWorkflowLogChannel={c.setAiWorkflowLogChannel}
+          aiWorkflowLogLimit={c.aiWorkflowLogLimit}
+          setAiWorkflowLogLimit={c.setAiWorkflowLogLimit}
+          autoReviewFields={autoReviewFields}
+          systemSettings={c.systemSettings}
+          setSystemSettings={c.setSystemSettings}
+          autoReviewSaveHint={c.autoReviewSaveHint}
+          savingAutoReviewSettings={c.savingAutoReviewSettings}
+          saveAutoReviewEnv={c.saveAutoReviewEnv}
+          updateSkillStepField={c.updateSkillStepField}
+          updateSkillConstraintField={c.updateSkillConstraintField}
+          updateSkillPromptField={c.updateSkillPromptField}
+          saveSkillWorkflowConfig={c.saveSkillWorkflowConfig}
+          resetSkillWorkflowConfig={c.resetSkillWorkflowConfig}
+          loadSkillWorkflowConfig={c.loadSkillWorkflowConfig}
+          loadAIWorkflowLogs={c.loadAIWorkflowLogs}
+          fmtNum={fmtNum}
+          fmtTime={fmtTime}
+        />
+      )}
+
       {c.menu === 'backtest' && (
         <BacktestPageSection
           btStrategyPickerRef={c.btStrategyPickerRef}
@@ -208,7 +243,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           systemRuntime={c.systemRuntime}
           fmtNum={fmtNum}
           fmtTime={fmtTime}
-          envFieldGroups={envFieldGroups}
+          envFieldGroups={systemEnvGroups}
           systemSettings={c.systemSettings}
           setSystemSettings={c.setSystemSettings}
           systemSaveHint={c.systemSaveHint}
@@ -234,12 +269,6 @@ export function DashboardContent({ c, renderOverviewCards }) {
           bindExchangeAccount={c.bindExchangeAccount}
           deletingExchangeId={c.deletingExchangeId}
           removeExchangeAccount={c.removeExchangeAccount}
-          promptSettings={c.promptSettings}
-          setPromptSettings={c.setPromptSettings}
-          resetPromptConfig={c.resetPromptConfig}
-          resettingPrompts={c.resettingPrompts}
-          savePromptConfig={c.savePromptConfig}
-          savingPrompts={c.savingPrompts}
         />
       )}
     </>

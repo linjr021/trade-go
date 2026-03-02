@@ -21,6 +21,7 @@ var editableEnvKeys = []string{
 	"AI_BASE_URL",
 	"AI_MODEL",
 	"PY_STRATEGY_URL",
+	"PY_STRATEGY_ENABLED",
 	"BINANCE_API_KEY",
 	"BINANCE_SECRET",
 	"MODE",
@@ -30,6 +31,18 @@ var editableEnvKeys = []string{
 	"REALTIME_MIN_INTERVAL_SEC",
 	"STRATEGY_LLM_ENABLED",
 	"STRATEGY_LLM_TIMEOUT_SEC",
+	"AUTO_REVIEW_ENABLED",
+	"AUTO_REVIEW_AFTER_ORDER_ONLY",
+	"AUTO_REVIEW_INTERVAL_SEC",
+	"AUTO_REVIEW_VOLATILITY_PCT",
+	"AUTO_REVIEW_DRAWDOWN_WARN_PCT",
+	"AUTO_REVIEW_LOSS_STREAK_WARN",
+	"AUTO_REVIEW_RISK_REDUCE_FACTOR",
+	"AUTO_STRATEGY_REGEN_ENABLED",
+	"AUTO_STRATEGY_REGEN_COOLDOWN_SEC",
+	"AUTO_STRATEGY_REGEN_LOSS_STREAK",
+	"AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT",
+	"AUTO_STRATEGY_REGEN_MIN_RR",
 }
 
 func (s *Service) handleSystemSettings(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +57,10 @@ func (s *Service) handleSystemSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleGetSystemSettings(w http.ResponseWriter, r *http.Request) {
+	// Keep .env in sync with front-end integration state before exposing runtime settings.
+	// This avoids startup race where system settings are read before integrations cleanup.
+	_, _ = readIntegrations()
+
 	out := map[string]string{}
 	for _, k := range editableEnvKeys {
 		out[k] = os.Getenv(k)
@@ -211,6 +228,75 @@ func validateSystemSettings(settings map[string]string) (map[string]string, map[
 			errs["STRATEGY_LLM_TIMEOUT_SEC"] = "应为 1-300 的整数"
 		}
 	}
+	if v := get("AUTO_REVIEW_ENABLED"); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			errs["AUTO_REVIEW_ENABLED"] = "仅支持 true/false"
+		}
+	}
+	if v := get("AUTO_REVIEW_AFTER_ORDER_ONLY"); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			errs["AUTO_REVIEW_AFTER_ORDER_ONLY"] = "仅支持 true/false"
+		}
+	}
+	if v := get("AUTO_REVIEW_INTERVAL_SEC"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 60 || n > 86400 {
+			errs["AUTO_REVIEW_INTERVAL_SEC"] = "应为 60-86400 的整数"
+		}
+	}
+	if v := get("AUTO_REVIEW_VOLATILITY_PCT"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 20 {
+			errs["AUTO_REVIEW_VOLATILITY_PCT"] = "应为 (0,20] 的数字"
+		}
+	}
+	if v := get("AUTO_REVIEW_DRAWDOWN_WARN_PCT"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 1 {
+			errs["AUTO_REVIEW_DRAWDOWN_WARN_PCT"] = "应为 (0,1] 的数字"
+		}
+	}
+	if v := get("AUTO_REVIEW_LOSS_STREAK_WARN"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			errs["AUTO_REVIEW_LOSS_STREAK_WARN"] = "应为 1-100 的整数"
+		}
+	}
+	if v := get("AUTO_REVIEW_RISK_REDUCE_FACTOR"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 1 {
+			errs["AUTO_REVIEW_RISK_REDUCE_FACTOR"] = "应为 (0,1] 的数字"
+		}
+	}
+	if v := get("AUTO_STRATEGY_REGEN_ENABLED"); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			errs["AUTO_STRATEGY_REGEN_ENABLED"] = "仅支持 true/false"
+		}
+	}
+	if v := get("AUTO_STRATEGY_REGEN_COOLDOWN_SEC"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 300 || n > 604800 {
+			errs["AUTO_STRATEGY_REGEN_COOLDOWN_SEC"] = "应为 300-604800 的整数"
+		}
+	}
+	if v := get("AUTO_STRATEGY_REGEN_LOSS_STREAK"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			errs["AUTO_STRATEGY_REGEN_LOSS_STREAK"] = "应为 1-100 的整数"
+		}
+	}
+	if v := get("AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f <= 0 || f > 1 {
+			errs["AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT"] = "应为 (0,1] 的数字"
+		}
+	}
+	if v := get("AUTO_STRATEGY_REGEN_MIN_RR"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f < 1 || f > 10 {
+			errs["AUTO_STRATEGY_REGEN_MIN_RR"] = "应为 [1,10] 的数字"
+		}
+	}
 
 	return errs, warns
 }
@@ -261,8 +347,30 @@ func applyRuntimeConfigFromEnv() {
 	cfg.AIBaseURL = os.Getenv("AI_BASE_URL")
 	cfg.AIModel = os.Getenv("AI_MODEL")
 	cfg.PyStrategyURL = os.Getenv("PY_STRATEGY_URL")
+	cfg.ActiveExchange = os.Getenv("ACTIVE_EXCHANGE")
 	cfg.BinanceAPIKey = os.Getenv("BINANCE_API_KEY")
 	cfg.BinanceSecret = os.Getenv("BINANCE_SECRET")
+	cfg.OKXAPIKey = os.Getenv("OKX_API_KEY")
+	cfg.OKXSecret = os.Getenv("OKX_SECRET")
+	cfg.OKXPassword = os.Getenv("OKX_PASSWORD")
+	if v := strings.TrimSpace(os.Getenv("TRADE_SYMBOL")); v != "" {
+		cfg.Trade.Symbol = strings.ToUpper(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("TRADE_AMOUNT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.Amount = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("HIGH_CONFIDENCE_AMOUNT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.HighConfidenceAmount = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOW_CONFIDENCE_AMOUNT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.LowConfidenceAmount = f
+		}
+	}
 
 	if v := os.Getenv("HIGH_CONFIDENCE_MARGIN_PCT"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
@@ -276,5 +384,113 @@ func applyRuntimeConfigFromEnv() {
 	}
 	if v := os.Getenv("POSITION_SIZING_MODE"); v != "" {
 		cfg.Trade.PositionSizingMode = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LEVERAGE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.Leverage = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMEFRAME")); v != "" {
+		cfg.Trade.Timeframe = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TEST_MODE")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Trade.TestMode = b
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("DATA_POINTS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.DataPoints = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MAX_RISK_PER_TRADE_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.MaxRiskPerTradePct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MAX_POSITION_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.MaxPositionPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MAX_CONSECUTIVE_LOSSES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.MaxConsecutiveLosses = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MAX_DAILY_LOSS_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.MaxDailyLossPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MAX_DRAWDOWN_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.MaxDrawdownPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LIQUIDATION_BUFFER_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.LiquidationBufferPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_ENABLED")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Trade.AutoReviewEnabled = b
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_AFTER_ORDER_ONLY")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Trade.AutoReviewAfterOrderOnly = b
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_INTERVAL_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.AutoReviewIntervalSec = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_VOLATILITY_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.AutoReviewVolatilityPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_DRAWDOWN_WARN_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.AutoReviewDrawdownWarnPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_LOSS_STREAK_WARN")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.AutoReviewLossStreakWarn = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_REVIEW_RISK_REDUCE_FACTOR")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.AutoReviewRiskReduceFactor = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_STRATEGY_REGEN_ENABLED")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Trade.AutoStrategyRegenEnabled = b
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_STRATEGY_REGEN_COOLDOWN_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.AutoStrategyRegenCooldownSec = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_STRATEGY_REGEN_LOSS_STREAK")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Trade.AutoStrategyRegenLossStreak = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.AutoStrategyRegenDrawdownWarnPct = f
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTO_STRATEGY_REGEN_MIN_RR")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Trade.AutoStrategyRegenMinRR = f
+		}
 	}
 }

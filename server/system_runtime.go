@@ -27,13 +27,48 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 	runtime.ReadMemStats(&mem)
 	hostname, _ := os.Hostname()
 
-	llmConfigured := strings.TrimSpace(config.Config.AIAPIKey) != "" && strings.TrimSpace(config.Config.AIBaseURL) != ""
+	inte, _ := readIntegrations()
+	activeLLM := findLLMByID(inte.LLMs, inte.ActiveLLMID)
+	llmConfiguredByEnv := strings.TrimSpace(config.Config.AIAPIKey) != "" && strings.TrimSpace(config.Config.AIBaseURL) != ""
+	llmConfigured := activeLLM != nil || llmConfiguredByEnv
 	llmModel := strings.TrimSpace(config.Config.AIModel)
+	llmStatus := "unconfigured"
+	llmMessage := "AI_API_KEY/AI_BASE_URL 未配置"
+	llmReachable := false
+	llmCheckedAt := ""
+	if activeLLM != nil {
+		if m := strings.TrimSpace(activeLLM.Model); m != "" {
+			llmModel = m
+		}
+		llmCheckedAt = strings.TrimSpace(activeLLM.CheckedAt)
+		switch normalizeLLMReachabilityStatus(activeLLM.Status) {
+		case "reachable":
+			llmStatus = "connected"
+			llmReachable = true
+			msg := strings.TrimSpace(activeLLM.Message)
+			if msg == "" {
+				msg = "智能体可达"
+			}
+			llmMessage = msg
+		case "unreachable":
+			llmStatus = "warning"
+			msg := strings.TrimSpace(activeLLM.Message)
+			if msg == "" {
+				msg = "智能体不可达"
+			}
+			llmMessage = msg
+		default:
+			llmStatus = "configured"
+			llmMessage = "智能体参数已配置（未验证可用性）"
+		}
+	} else if llmConfiguredByEnv {
+		llmStatus = "configured"
+		llmMessage = "智能体参数已配置（未验证可用性）"
+	}
 	if llmModel == "" {
 		llmModel = "chat-model"
 	}
 
-	inte, _ := readIntegrations()
 	activeExchange := findExchangeByID(inte.Exchanges, inte.ActiveExchangeID)
 	exchangeBound := activeExchange != nil
 	exchangeReady := false
@@ -83,8 +118,8 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 			},
 			{
 				"name":    "智能体连接",
-				"status":  boolStatus(llmConfigured, "configured", "unconfigured"),
-				"message": boolStatus(llmConfigured, "智能体参数已配置（未验证可用性）", "AI_API_KEY/AI_BASE_URL 未配置"),
+				"status":  llmStatus,
+				"message": llmMessage,
 			},
 		},
 		"resources": map[string]any{
@@ -111,6 +146,10 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 			},
 			"agent": map[string]any{
 				"configured":  llmConfigured,
+				"reachable":   llmReachable,
+				"status":      llmStatus,
+				"message":     llmMessage,
+				"checked_at":  llmCheckedAt,
 				"model":       llmModel,
 				"token_usage": getLLMUsageSnapshot(),
 			},

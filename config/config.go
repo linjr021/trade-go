@@ -9,23 +9,35 @@ import (
 )
 
 type TradeConfig struct {
-	Symbol                string
-	Amount                float64
-	HighConfidenceAmount  float64
-	LowConfidenceAmount   float64
-	PositionSizingMode    string
-	HighConfidenceMarginPct float64
-	LowConfidenceMarginPct  float64
-	Leverage              int
-	Timeframe             string
-	TestMode              bool
-	DataPoints            int
-	MaxRiskPerTradePct    float64
-	MaxPositionPct        float64
-	MaxConsecutiveLosses  int
-	MaxDailyLossPct       float64
-	MaxDrawdownPct        float64
-	LiquidationBufferPct  float64
+	Symbol                           string
+	Amount                           float64
+	HighConfidenceAmount             float64
+	LowConfidenceAmount              float64
+	PositionSizingMode               string
+	HighConfidenceMarginPct          float64
+	LowConfidenceMarginPct           float64
+	Leverage                         int
+	Timeframe                        string
+	TestMode                         bool
+	DataPoints                       int
+	MaxRiskPerTradePct               float64
+	MaxPositionPct                   float64
+	MaxConsecutiveLosses             int
+	MaxDailyLossPct                  float64
+	MaxDrawdownPct                   float64
+	LiquidationBufferPct             float64
+	AutoReviewEnabled                bool
+	AutoReviewAfterOrderOnly         bool
+	AutoReviewIntervalSec            int
+	AutoReviewVolatilityPct          float64
+	AutoReviewDrawdownWarnPct        float64
+	AutoReviewLossStreakWarn         int
+	AutoReviewRiskReduceFactor       float64
+	AutoStrategyRegenEnabled         bool
+	AutoStrategyRegenCooldownSec     int
+	AutoStrategyRegenLossStreak      int
+	AutoStrategyRegenDrawdownWarnPct float64
+	AutoStrategyRegenMinRR           float64
 
 	// Analysis periods
 	ShortTermPeriod  int
@@ -38,6 +50,7 @@ type AppConfig struct {
 	AIBaseURL      string
 	AIModel        string
 	PyStrategyURL  string
+	ActiveExchange string
 	BinanceAPIKey  string
 	BinanceSecret  string
 	OKXAPIKey      string
@@ -58,32 +71,45 @@ func Load() {
 		AIBaseURL:      getEnv("AI_BASE_URL", ""),
 		AIModel:        getEnv("AI_MODEL", ""),
 		PyStrategyURL:  getEnv("PY_STRATEGY_URL", ""),
+		ActiveExchange: getEnv("ACTIVE_EXCHANGE", "binance"),
 		BinanceAPIKey:  getEnv("BINANCE_API_KEY", ""),
 		BinanceSecret:  getEnv("BINANCE_SECRET", ""),
 		OKXAPIKey:      getEnv("OKX_API_KEY", ""),
 		OKXSecret:      getEnv("OKX_SECRET", ""),
 		OKXPassword:    getEnv("OKX_PASSWORD", ""),
 		Trade: TradeConfig{
-			Symbol:                  "BTCUSDT",
-			Amount:                  0.01,
-			HighConfidenceAmount:    0.01,
-			LowConfidenceAmount:     0.005,
-			PositionSizingMode:      getEnv("POSITION_SIZING_MODE", "contracts"),
-			HighConfidenceMarginPct: getEnvFloat("HIGH_CONFIDENCE_MARGIN_PCT", 0.10),
-			LowConfidenceMarginPct:  getEnvFloat("LOW_CONFIDENCE_MARGIN_PCT", 0.05),
-			Leverage:                10,
-			Timeframe:               "15m",
-			TestMode:                getEnvBool("TEST_MODE", false),
-			DataPoints:              96,
-			MaxRiskPerTradePct:      0.01,
-			MaxPositionPct:          0.20,
-			MaxConsecutiveLosses:    3,
-			MaxDailyLossPct:         0.05,
-			MaxDrawdownPct:          0.12,
-			LiquidationBufferPct:    0.02,
-			ShortTermPeriod:         20,
-			MediumTermPeriod:        50,
-			LongTermPeriod:          96,
+			Symbol:                           getEnv("TRADE_SYMBOL", "BTCUSDT"),
+			Amount:                           getEnvFloat("TRADE_AMOUNT", 0.01),
+			HighConfidenceAmount:             getEnvFloat("HIGH_CONFIDENCE_AMOUNT", 0.01),
+			LowConfidenceAmount:              getEnvFloat("LOW_CONFIDENCE_AMOUNT", 0.005),
+			PositionSizingMode:               getEnv("POSITION_SIZING_MODE", "contracts"),
+			HighConfidenceMarginPct:          getEnvFloat("HIGH_CONFIDENCE_MARGIN_PCT", 0.10),
+			LowConfidenceMarginPct:           getEnvFloat("LOW_CONFIDENCE_MARGIN_PCT", 0.05),
+			Leverage:                         getEnvInt("LEVERAGE", 10),
+			Timeframe:                        getEnv("TIMEFRAME", "15m"),
+			TestMode:                         getEnvBool("TEST_MODE", false),
+			DataPoints:                       getEnvInt("DATA_POINTS", 96),
+			MaxRiskPerTradePct:               getEnvFloat("MAX_RISK_PER_TRADE_PCT", 0.01),
+			MaxPositionPct:                   getEnvFloat("MAX_POSITION_PCT", 0.20),
+			MaxConsecutiveLosses:             getEnvInt("MAX_CONSECUTIVE_LOSSES", 3),
+			MaxDailyLossPct:                  getEnvFloat("MAX_DAILY_LOSS_PCT", 0.05),
+			MaxDrawdownPct:                   getEnvFloat("MAX_DRAWDOWN_PCT", 0.12),
+			LiquidationBufferPct:             getEnvFloat("LIQUIDATION_BUFFER_PCT", 0.02),
+			AutoReviewEnabled:                getEnvBool("AUTO_REVIEW_ENABLED", true),
+			AutoReviewAfterOrderOnly:         getEnvBool("AUTO_REVIEW_AFTER_ORDER_ONLY", true),
+			AutoReviewIntervalSec:            getEnvInt("AUTO_REVIEW_INTERVAL_SEC", 1800),
+			AutoReviewVolatilityPct:          getEnvFloat("AUTO_REVIEW_VOLATILITY_PCT", 1.2),
+			AutoReviewDrawdownWarnPct:        getEnvFloat("AUTO_REVIEW_DRAWDOWN_WARN_PCT", 0.05),
+			AutoReviewLossStreakWarn:         getEnvInt("AUTO_REVIEW_LOSS_STREAK_WARN", 2),
+			AutoReviewRiskReduceFactor:       getEnvFloat("AUTO_REVIEW_RISK_REDUCE_FACTOR", 0.7),
+			AutoStrategyRegenEnabled:         getEnvBool("AUTO_STRATEGY_REGEN_ENABLED", true),
+			AutoStrategyRegenCooldownSec:     getEnvInt("AUTO_STRATEGY_REGEN_COOLDOWN_SEC", 21600),
+			AutoStrategyRegenLossStreak:      getEnvInt("AUTO_STRATEGY_REGEN_LOSS_STREAK", 3),
+			AutoStrategyRegenDrawdownWarnPct: getEnvFloat("AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT", 0.08),
+			AutoStrategyRegenMinRR:           getEnvFloat("AUTO_STRATEGY_REGEN_MIN_RR", 2.0),
+			ShortTermPeriod:                  getEnvInt("SHORT_TERM_PERIOD", 20),
+			MediumTermPeriod:                 getEnvInt("MEDIUM_TERM_PERIOD", 50),
+			LongTermPeriod:                   getEnvInt("LONG_TERM_PERIOD", 96),
 		},
 	}
 }
@@ -117,4 +143,16 @@ func getEnvFloat(key string, defaultVal float64) float64 {
 		return defaultVal
 	}
 	return f
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return defaultVal
+	}
+	return n
 }

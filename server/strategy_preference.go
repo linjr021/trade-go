@@ -47,10 +47,7 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 	if symbol == "" {
 		symbol = "BTCUSDT"
 	}
-	habit := strings.TrimSpace(req.Habit)
-	if habit == "" {
-		habit = "1h"
-	}
+	habit := normalizeHabitInput(req.Habit)
 	style := strings.TrimSpace(req.StrategyStyle)
 	if style == "" {
 		style = "hybrid"
@@ -67,14 +64,39 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 	if directionBias == "" {
 		directionBias = "balanced"
 	}
-	f := timeframeByHabit(habit)
+	profile := habitProfileOf(habit)
+	f := profile.Timeframe
 	tradeCfg := s.bot.TradeConfig()
 
 	client := exchange.NewClient()
 	candles, err := client.FetchOHLCV(symbol, f, 120)
 	if err != nil || len(candles) < 30 {
 		fb := fallbackGeneratedPreference(symbol, habit, f, style, minRR, req.AllowReversal, lowConfAction, directionBias, "行情抓取失败，回退模板生成", tradeCfg)
-		writeJSON(w, http.StatusOK, map[string]any{"generated": fb, "fallback": true})
+		skillPkg := buildStrategySkillPackage(
+			symbol,
+			habit,
+			style,
+			minRR,
+			req.AllowReversal,
+			lowConfAction,
+			directionBias,
+			tradeCfg,
+			map[string]any{
+				"symbol":    symbol,
+				"timeframe": f,
+				"error":     "market_data_unavailable",
+			},
+		)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"generated":     fb,
+			"fallback":      true,
+			"skill_package": skillPkg,
+			"market": map[string]any{
+				"symbol":        symbol,
+				"timeframe":     f,
+				"habit_profile": habitProfileOf(habit),
+			},
+		})
 		return
 	}
 
@@ -85,16 +107,45 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 	prev := candles[len(candles)-2]
 	change := (cur.Close - prev.Close) / prev.Close * 100
 
+	marketView := map[string]any{
+		"symbol":           symbol,
+		"timeframe":        f,
+		"price":            cur.Close,
+		"price_change_pct": change,
+		"trend":            trend.Overall,
+		"rsi":              ind.RSI,
+		"macd":             ind.MACD,
+		"macd_signal":      ind.MACDSignal,
+		"ema7":             ind.EMA12,
+		"ema25":            ind.EMA26,
+		"ema99":            ind.SMA50,
+		"resistance":       levels.StaticResistance,
+		"support":          levels.StaticSupport,
+	}
+	skillPkg := buildStrategySkillPackage(
+		symbol,
+		habit,
+		style,
+		minRR,
+		req.AllowReversal,
+		lowConfAction,
+		directionBias,
+		tradeCfg,
+		marketView,
+	)
+
 	gen, usedFallback := generatePreferenceByLLM(
 		symbol, habit, f, cur.Close, change, trend.Overall, ind, levels,
 		style, minRR, req.AllowReversal, lowConfAction, directionBias, tradeCfg,
 	)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"generated": gen,
-		"fallback":  usedFallback,
+		"generated":     gen,
+		"fallback":      usedFallback,
+		"skill_package": skillPkg,
 		"market": map[string]any{
 			"symbol":           symbol,
 			"timeframe":        f,
+			"habit_profile":    profile,
 			"price":            cur.Close,
 			"price_change_pct": change,
 			"trend":            trend.Overall,
@@ -126,18 +177,7 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 }
 
 func timeframeByHabit(h string) string {
-	switch strings.TrimSpace(h) {
-	case "10m":
-		return "15m"
-	case "1h":
-		return "1h"
-	case "4h":
-		return "4h"
-	case "1D", "5D", "30D", "90D":
-		return "1d"
-	default:
-		return "1h"
-	}
+	return habitProfileOf(h).Timeframe
 }
 
 func generatePreferenceByLLM(
@@ -163,11 +203,37 @@ func generatePreferenceByLLM(
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI未配置，回退模板生成", tradeCfg), true
 	}
 
+	workflowCfg := loadSkillWorkflowConfig()
+	promptCfg := workflowCfg.Prompts
+	profile := habitProfileOf(habit)
+	workflowSteps := enabledSkillWorkflowSteps(workflowCfg)
+	workflowStepLabels := make([]string, 0, len(workflowSteps))
+	for _, sid := range workflowSteps {
+		label := sid
+		for _, st := range workflowCfg.Steps {
+			if strings.TrimSpace(st.ID) != sid {
+				continue
+			}
+			if name := strings.TrimSpace(st.Name); name != "" {
+				label = name
+			}
+			break
+		}
+		workflowStepLabels = append(workflowStepLabels, label)
+	}
+	requirements := append([]string{}, promptCfg.StrategyGeneratorRequirements...)
+	requirements = append(requirements,
+		fmt.Sprintf("策略必须兼容当前工作流（%s）", strings.Join(workflowStepLabels, " -> ")),
+		fmt.Sprintf("最小盈亏比（盈利/亏损）需 >= %.4f，除非明确严格不交易", minRR),
+	)
 	prompt := map[string]any{
-		"task": "Generate a practical trading preference prompt and strategy template from selected options and current market state.",
+		"task":               promptCfg.StrategyGeneratorTaskPrompt,
+		"skill_workflow":     workflowStepLabels,
+		"skill_workflow_ids": workflowSteps,
 		"selected": map[string]any{
 			"symbol":          symbol,
 			"habit":           habit,
+			"habit_profile":   profile,
 			"timeframe":       tf,
 			"strategy_style":  style,
 			"min_rr":          minRR,
@@ -190,14 +256,7 @@ func generatePreferenceByLLM(
 			"technical":     ind,
 			"levels":        levels,
 		},
-		"requirements": []string{
-			"Output strict JSON only",
-			"preference_prompt must include entry/SL/TP/RR and HOLD condition",
-			"generator_prompt must include ${symbol} and ${habit}",
-			"do not output fixed order amount or fixed leverage",
-			"actual order size/margin/leverage must follow live execution settings",
-			fmt.Sprintf("RR must be >= %.4f unless strict no-trade", minRR),
-		},
+		"requirements": requirements,
 		"schema": map[string]any{
 			"strategy_name":     "string",
 			"preference_prompt": "string",
@@ -209,7 +268,7 @@ func generatePreferenceByLLM(
 	body := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
-			{"role": "system", "content": "You are a quant strategy architect. Return strict JSON only."},
+			{"role": "system", "content": promptCfg.StrategyGeneratorSystemPrompt},
 			{"role": "user", "content": mustJSON(prompt)},
 		},
 		"temperature": 0.2,
@@ -249,7 +308,7 @@ func generatePreferenceByLLM(
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI解析失败，回退模板生成", tradeCfg), true
 	}
 	content := chat.Choices[0].Message.Content
-	recordLLMUsage("strategy_generator", mustJSON(prompt), content)
+	recordLLMUsageWithMeta("strategy_generator", model, mustJSON(prompt), content)
 	obj, ok := extractJSONObject(content)
 	if !ok {
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI未输出JSON，回退模板生成", tradeCfg), true
@@ -294,7 +353,7 @@ func fallbackGeneratedPreference(
 +入场条件：关键支撑/阻力、突破回踩、均线共振。
 +风险收益：盈亏比（盈利/亏损）=|TP-Entry|/|Entry-SL|，目标>=%.2f。
 +仓位与杠杆：由实盘执行参数与风控引擎统一决定，不在策略内固定金额。
-+反转策略：allow_reversal=%t；低信心处理=%s。
++反转策略：允许反转=%t；低信心处理=%s。
 +若条件不足，返回HOLD并给出触发价位。
 %s`, habit, tf, style, directionBias, minRR, allowReversal, lowConfAction, execDesc)
 	generator := `你是资深量化策略研究员。请为 ${symbol} 在 ${habit} 交易习惯下生成一套可执行自动策略。

@@ -1,0 +1,82 @@
+{
+  "version": "habit-profile/v1",
+  "profiles": [
+    {
+      "habit": "10m",
+      "label": "超短线",
+      "timeframe": "15m",
+      "max_leverage": 30,
+      "max_drawdown_pct": 0.04,
+      "max_risk_per_trade_pct": 0.008,
+      "allow_add_position": false,
+      "hold_bars_min": 1,
+      "hold_bars_max": 16
+    },
+    {
+      "habit": "1h",
+      "label": "日内短线",
+      "timeframe": "1h",
+      "max_leverage": 20,
+      "max_drawdown_pct": 0.06,
+      "max_risk_per_trade_pct": 0.01,
+      "allow_add_position": true,
+      "hold_bars_min": 2,
+      "hold_bars_max": 24
+    },
+    {
+      "habit": "4h",
+      "label": "波段",
+      "timeframe": "4h",
+      "max_leverage": 10,
+      "max_drawdown_pct": 0.08,
+      "max_risk_per_trade_pct": 0.012,
+      "allow_add_position": true,
+      "hold_bars_min": 4,
+      "hold_bars_max": 40
+    },
+    {
+      "habit": "1D",
+      "label": "日线趋势",
+      "timeframe": "1d",
+      "max_leverage": 6,
+      "max_drawdown_pct": 0.1,
+      "max_risk_per_trade_pct": 0.015,
+      "allow_add_position": true,
+      "hold_bars_min": 3,
+      "hold_bars_max": 60
+    },
+    {
+      "habit": "5D",
+      "label": "周内波段",
+      "timeframe": "1d",
+      "max_leverage": 5,
+      "max_drawdown_pct": 0.1,
+      "max_risk_per_trade_pct": 0.015,
+      "allow_add_position": true,
+      "hold_bars_min": 5,
+      "hold_bars_max": 90
+    },
+    {
+      "habit": "30D",
+      "label": "中期配置",
+      "timeframe": "1d",
+      "max_leverage": 3,
+      "max_drawdown_pct": 0.12,
+      "max_risk_per_trade_pct": 0.02,
+      "allow_add_position": false,
+      "hold_bars_min": 12,
+      "hold_bars_max": 180
+    },
+    {
+      "habit": "90D",
+      "label": "长周期配置",
+      "timeframe": "1d",
+      "max_leverage": 2,
+      "max_drawdown_pct": 0.15,
+      "max_risk_per_trade_pct": 0.02,
+      "allow_add_position": false,
+      "hold_bars_min": 20,
+      "hold_bars_max": 260
+    }
+  ]
+}

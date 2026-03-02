@@ -1,0 +1,28 @@
+{
+  "version": "skill-pipeline/v1",
+  "required": [
+    "version",
+    "generated_at",
+    "workflow",
+    "symbol",
+    "habit",
+    "habit_profile",
+    "spec_builder",
+    "strategy_draft",
+    "optimizer",
+    "risk_reviewer",
+    "release_packager"
+  ],
+  "workflow": [
+    "spec-builder",
+    "strategy-draft",
+    "optimizer",
+    "risk-reviewer",
+    "release-packager"
+  ],
+  "notes": [
+    "任一步骤失败必须回退 HOLD",
+    "仓位与杠杆由 risk-plan/risk-engine 最终覆盖",
+    "仅允许结构化 JSON 输出"
+  ]
+}

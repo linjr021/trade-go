@@ -16,6 +16,9 @@ export const getTradeRecords = (limit = 40) => http.get('/trade-records', { para
 export const getStrategyScores = (limit = 20) => http.get('/strategy-scores', { params: { limit } })
 export const getStrategies = () => http.get('/strategies')
 export const getStrategyTemplate = () => http.get('/strategies/template')
+export const getGeneratedStrategies = () => http.get('/generated-strategies')
+export const syncGeneratedStrategies = (strategies) =>
+  http.post('/generated-strategies', { strategies }, { timeout: 30000 })
 export const uploadStrategyFile = (file) => {
   const form = new FormData()
   form.append('file', file)
@@ -26,6 +29,10 @@ export const uploadStrategyFile = (file) => {
 }
 export const generateStrategyPreference = (payload) =>
   http.post('/strategy-preference/generate', payload, { timeout: 120000 })
+export const getSkillWorkflow = () => http.get('/skill-workflow')
+export const saveSkillWorkflow = (workflow) => http.post('/skill-workflow', { workflow })
+export const resetSkillWorkflow = () => http.post('/skill-workflow', { reset_default: true })
+export const getLLMUsageLogs = (params = {}) => http.get('/llm-usage/logs', { params })
 export const runBacktestApi = (payload) => http.post('/backtest', payload, { timeout: 120000 })
 export const getBacktestHistory = (limit = 80) => http.get('/backtest-history', { params: { limit } })
 export const getBacktestHistoryDetail = (id) => http.get('/backtest-history/detail', { params: { id } })
@@ -46,9 +53,6 @@ export const activateExchangeIntegration = (id) =>
   http.post('/integrations/exchange/activate', { id }, { timeout: 30000 })
 export const deleteExchangeIntegration = (id) =>
   http.post('/integrations/exchange/delete', { id }, { timeout: 30000 })
-export const getPromptSettings = () => http.get('/prompt-settings')
-export const savePromptSettings = (prompts) => http.post('/prompt-settings', { prompts })
-export const resetPromptSettings = () => http.post('/prompt-settings', { reset_default: true })
 
 export const updateSettings = (payload) => http.post('/settings', payload)
 export const runNow = () => http.post('/run')

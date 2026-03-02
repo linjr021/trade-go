@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"trade-go/config"
 	"trade-go/trader"
 )
 
@@ -18,18 +21,22 @@ type Service struct {
 	runMu sync.Mutex
 	mu    sync.RWMutex
 
-	schedulerRunning bool
-	nextRunAt        time.Time
-	cancelScheduler  context.CancelFunc
-	startedAt        time.Time
-	restartCount     int
+	schedulerRunning            bool
+	nextRunAt                   time.Time
+	cancelScheduler             context.CancelFunc
+	startedAt                   time.Time
+	restartCount                int
+	lastAutoStrategyRegenAt     time.Time
+	nextAutoStrategyRegenAt     time.Time
+	lastAutoStrategyRegenReason string
 }
 
 func NewService(bot *trader.Bot) *Service {
-	loadPromptSettingsToEnv()
+	applySkillWorkflowPromptsToEnv(loadSkillWorkflowConfig())
 	return &Service{
-		bot:       bot,
-		startedAt: time.Now(),
+		bot:                         bot,
+		startedAt:                   time.Now(),
+		lastAutoStrategyRegenReason: "等待自动重生成触发",
 	}
 }
 
@@ -47,6 +54,9 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/strategies/template", s.handleStrategyTemplate)
 	mux.HandleFunc("/api/strategies/upload", s.handleStrategyUpload)
 	mux.HandleFunc("/api/strategy-preference/generate", s.handleGenerateStrategyPreference)
+	mux.HandleFunc("/api/generated-strategies", s.handleGeneratedStrategies)
+	mux.HandleFunc("/api/skill-workflow", s.handleSkillWorkflow)
+	mux.HandleFunc("/api/llm-usage/logs", s.handleLLMUsageLogs)
 	mux.HandleFunc("/api/backtest", s.handleBacktest)
 	mux.HandleFunc("/api/backtest-history", s.handleBacktestHistory)
 	mux.HandleFunc("/api/backtest-history/detail", s.handleBacktestHistoryDetail)
@@ -66,7 +76,6 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/integrations/exchange/delete", s.handleDeleteExchangeIntegration)
 	mux.HandleFunc("/api/system/runtime", s.handleSystemRuntimeStatus)
 	mux.HandleFunc("/api/system/restart", s.handleSystemSoftRestart)
-	mux.HandleFunc("/api/prompt-settings", s.handlePromptSettings)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/run", s.handleRunNow)
@@ -128,6 +137,7 @@ func (s *Service) runCycle() {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	s.bot.Run()
+	s.maybeAutoRegenerateStrategy()
 }
 
 func (s *Service) RunOnce() {
@@ -149,6 +159,11 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"next_run_at":       s.nextRunAt,
 		"runtime":           snap,
 		"strategy_scores":   s.bot.StrategyComboScores(20),
+		"auto_strategy_regen": map[string]any{
+			"last_at":     s.lastAutoStrategyRegenAt,
+			"next_at":     s.nextAutoStrategyRegenAt,
+			"last_reason": s.lastAutoStrategyRegenReason,
+		},
 	}
 	s.mu.RUnlock()
 	writeJSON(w, http.StatusOK, resp)
@@ -162,10 +177,19 @@ func (s *Service) handleAccount(w http.ResponseWriter, r *http.Request) {
 
 	balance, balanceErr := s.bot.FetchBalance()
 	position, posErr := s.bot.FetchPosition()
+	cfg := s.bot.TradeConfig()
+	activeExchange := s.bot.ActiveExchange()
+	positionSymbol := cfg.Symbol
+	if position != nil && strings.TrimSpace(position.Symbol) != "" {
+		positionSymbol = position.Symbol
+	}
 
 	resp := map[string]any{
-		"balance":  balance,
-		"position": position,
+		"balance":         balance,
+		"position":        position,
+		"symbol":          cfg.Symbol,
+		"position_symbol": positionSymbol,
+		"active_exchange": activeExchange,
 	}
 	if balanceErr != nil {
 		resp["balance_error"] = balanceErr.Error()
@@ -233,7 +257,10 @@ func (s *Service) handleAssetOverview(w http.ResponseWriter, r *http.Request) {
 		balance, _ := s.bot.FetchBalance()
 		summary.TotalFunds = balance
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"overview": summary})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"overview":        summary,
+		"active_exchange": s.bot.ActiveExchange(),
+	})
 }
 
 func (s *Service) handleAssetTrend(w http.ResponseWriter, r *http.Request) {
@@ -264,8 +291,9 @@ func (s *Service) handleAssetTrend(w http.ResponseWriter, r *http.Request) {
 		points = nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"range":  rng,
-		"points": points,
+		"range":           rng,
+		"points":          points,
+		"active_exchange": s.bot.ActiveExchange(),
 	})
 }
 
@@ -283,8 +311,9 @@ func (s *Service) handleAssetPnLCalendar(w http.ResponseWriter, r *http.Request)
 		items = nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"month": month,
-		"days":  items,
+		"month":           month,
+		"days":            items,
+		"active_exchange": s.bot.ActiveExchange(),
 	})
 }
 
@@ -320,7 +349,8 @@ func (s *Service) handleAssetDistribution(w http.ResponseWriter, r *http.Request
 	}
 	total := cash + hold
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total": total,
+		"total":           total,
+		"active_exchange": s.bot.ActiveExchange(),
 		"items": []map[string]any{
 			{"label": "可用资金", "value": cash, "color": "#2b6cd0"},
 			{"label": label, "value": hold, "color": "#0f996e"},
@@ -335,19 +365,31 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Symbol                  *string  `json:"symbol"`
-		HighConfidenceAmount    *float64 `json:"high_confidence_amount"`
-		LowConfidenceAmount     *float64 `json:"low_confidence_amount"`
-		PositionSizingMode      *string  `json:"position_sizing_mode"`
-		HighConfidenceMarginPct *float64 `json:"high_confidence_margin_pct"`
-		LowConfidenceMarginPct  *float64 `json:"low_confidence_margin_pct"`
-		Leverage                *int     `json:"leverage"`
-		MaxRiskPerTradePct      *float64 `json:"max_risk_per_trade_pct"`
-		MaxPositionPct          *float64 `json:"max_position_pct"`
-		MaxConsecutiveLosses    *int     `json:"max_consecutive_losses"`
-		MaxDailyLossPct         *float64 `json:"max_daily_loss_pct"`
-		MaxDrawdownPct          *float64 `json:"max_drawdown_pct"`
-		LiquidationBufferPct    *float64 `json:"liquidation_buffer_pct"`
+		Symbol                           *string  `json:"symbol"`
+		HighConfidenceAmount             *float64 `json:"high_confidence_amount"`
+		LowConfidenceAmount              *float64 `json:"low_confidence_amount"`
+		PositionSizingMode               *string  `json:"position_sizing_mode"`
+		HighConfidenceMarginPct          *float64 `json:"high_confidence_margin_pct"`
+		LowConfidenceMarginPct           *float64 `json:"low_confidence_margin_pct"`
+		Leverage                         *int     `json:"leverage"`
+		MaxRiskPerTradePct               *float64 `json:"max_risk_per_trade_pct"`
+		MaxPositionPct                   *float64 `json:"max_position_pct"`
+		MaxConsecutiveLosses             *int     `json:"max_consecutive_losses"`
+		MaxDailyLossPct                  *float64 `json:"max_daily_loss_pct"`
+		MaxDrawdownPct                   *float64 `json:"max_drawdown_pct"`
+		LiquidationBufferPct             *float64 `json:"liquidation_buffer_pct"`
+		AutoReviewEnabled                *bool    `json:"auto_review_enabled"`
+		AutoReviewAfterOrderOnly         *bool    `json:"auto_review_after_order_only"`
+		AutoReviewIntervalSec            *int     `json:"auto_review_interval_sec"`
+		AutoReviewVolatilityPct          *float64 `json:"auto_review_volatility_pct"`
+		AutoReviewDrawdownWarnPct        *float64 `json:"auto_review_drawdown_warn_pct"`
+		AutoReviewLossStreakWarn         *int     `json:"auto_review_loss_streak_warn"`
+		AutoReviewRiskReduceFactor       *float64 `json:"auto_review_risk_reduce_factor"`
+		AutoStrategyRegenEnabled         *bool    `json:"auto_strategy_regen_enabled"`
+		AutoStrategyRegenCooldownSec     *int     `json:"auto_strategy_regen_cooldown_sec"`
+		AutoStrategyRegenLossStreak      *int     `json:"auto_strategy_regen_loss_streak"`
+		AutoStrategyRegenDrawdownWarnPct *float64 `json:"auto_strategy_regen_drawdown_warn_pct"`
+		AutoStrategyRegenMinRR           *float64 `json:"auto_strategy_regen_min_rr"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
@@ -355,22 +397,38 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := s.bot.UpdateTradeSettings(trader.TradeSettingsUpdate{
-		Symbol:                  req.Symbol,
-		HighConfidenceAmount:    req.HighConfidenceAmount,
-		LowConfidenceAmount:     req.LowConfidenceAmount,
-		PositionSizingMode:      req.PositionSizingMode,
-		HighConfidenceMarginPct: req.HighConfidenceMarginPct,
-		LowConfidenceMarginPct:  req.LowConfidenceMarginPct,
-		Leverage:                req.Leverage,
-		MaxRiskPerTradePct:      req.MaxRiskPerTradePct,
-		MaxPositionPct:          req.MaxPositionPct,
-		MaxConsecutiveLosses:    req.MaxConsecutiveLosses,
-		MaxDailyLossPct:         req.MaxDailyLossPct,
-		MaxDrawdownPct:          req.MaxDrawdownPct,
-		LiquidationBufferPct:    req.LiquidationBufferPct,
+		Symbol:                           req.Symbol,
+		HighConfidenceAmount:             req.HighConfidenceAmount,
+		LowConfidenceAmount:              req.LowConfidenceAmount,
+		PositionSizingMode:               req.PositionSizingMode,
+		HighConfidenceMarginPct:          req.HighConfidenceMarginPct,
+		LowConfidenceMarginPct:           req.LowConfidenceMarginPct,
+		Leverage:                         req.Leverage,
+		MaxRiskPerTradePct:               req.MaxRiskPerTradePct,
+		MaxPositionPct:                   req.MaxPositionPct,
+		MaxConsecutiveLosses:             req.MaxConsecutiveLosses,
+		MaxDailyLossPct:                  req.MaxDailyLossPct,
+		MaxDrawdownPct:                   req.MaxDrawdownPct,
+		LiquidationBufferPct:             req.LiquidationBufferPct,
+		AutoReviewEnabled:                req.AutoReviewEnabled,
+		AutoReviewAfterOrderOnly:         req.AutoReviewAfterOrderOnly,
+		AutoReviewIntervalSec:            req.AutoReviewIntervalSec,
+		AutoReviewVolatilityPct:          req.AutoReviewVolatilityPct,
+		AutoReviewDrawdownWarnPct:        req.AutoReviewDrawdownWarnPct,
+		AutoReviewLossStreakWarn:         req.AutoReviewLossStreakWarn,
+		AutoReviewRiskReduceFactor:       req.AutoReviewRiskReduceFactor,
+		AutoStrategyRegenEnabled:         req.AutoStrategyRegenEnabled,
+		AutoStrategyRegenCooldownSec:     req.AutoStrategyRegenCooldownSec,
+		AutoStrategyRegenLossStreak:      req.AutoStrategyRegenLossStreak,
+		AutoStrategyRegenDrawdownWarnPct: req.AutoStrategyRegenDrawdownWarnPct,
+		AutoStrategyRegenMinRR:           req.AutoStrategyRegenMinRR,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := persistTradeConfigToEnv(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, "参数已生效但持久化失败: "+err.Error())
 		return
 	}
 
@@ -378,6 +436,47 @@ func (s *Service) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"message":      "settings updated",
 		"trade_config": tradeConfigMap(cfg),
 	})
+}
+
+func persistTradeConfigToEnv(cfg config.TradeConfig) error {
+	updates := map[string]string{
+		"TRADE_SYMBOL":                          strings.ToUpper(strings.TrimSpace(cfg.Symbol)),
+		"TRADE_AMOUNT":                          strconv.FormatFloat(cfg.Amount, 'f', -1, 64),
+		"HIGH_CONFIDENCE_AMOUNT":                strconv.FormatFloat(cfg.HighConfidenceAmount, 'f', -1, 64),
+		"LOW_CONFIDENCE_AMOUNT":                 strconv.FormatFloat(cfg.LowConfidenceAmount, 'f', -1, 64),
+		"POSITION_SIZING_MODE":                  strings.ToLower(strings.TrimSpace(cfg.PositionSizingMode)),
+		"HIGH_CONFIDENCE_MARGIN_PCT":            strconv.FormatFloat(cfg.HighConfidenceMarginPct, 'f', -1, 64),
+		"LOW_CONFIDENCE_MARGIN_PCT":             strconv.FormatFloat(cfg.LowConfidenceMarginPct, 'f', -1, 64),
+		"LEVERAGE":                              strconv.Itoa(cfg.Leverage),
+		"TIMEFRAME":                             strings.TrimSpace(cfg.Timeframe),
+		"DATA_POINTS":                           strconv.Itoa(cfg.DataPoints),
+		"MAX_RISK_PER_TRADE_PCT":                strconv.FormatFloat(cfg.MaxRiskPerTradePct, 'f', -1, 64),
+		"MAX_POSITION_PCT":                      strconv.FormatFloat(cfg.MaxPositionPct, 'f', -1, 64),
+		"MAX_CONSECUTIVE_LOSSES":                strconv.Itoa(cfg.MaxConsecutiveLosses),
+		"MAX_DAILY_LOSS_PCT":                    strconv.FormatFloat(cfg.MaxDailyLossPct, 'f', -1, 64),
+		"MAX_DRAWDOWN_PCT":                      strconv.FormatFloat(cfg.MaxDrawdownPct, 'f', -1, 64),
+		"LIQUIDATION_BUFFER_PCT":                strconv.FormatFloat(cfg.LiquidationBufferPct, 'f', -1, 64),
+		"AUTO_REVIEW_ENABLED":                   strconv.FormatBool(cfg.AutoReviewEnabled),
+		"AUTO_REVIEW_AFTER_ORDER_ONLY":          strconv.FormatBool(cfg.AutoReviewAfterOrderOnly),
+		"AUTO_REVIEW_INTERVAL_SEC":              strconv.Itoa(cfg.AutoReviewIntervalSec),
+		"AUTO_REVIEW_VOLATILITY_PCT":            strconv.FormatFloat(cfg.AutoReviewVolatilityPct, 'f', -1, 64),
+		"AUTO_REVIEW_DRAWDOWN_WARN_PCT":         strconv.FormatFloat(cfg.AutoReviewDrawdownWarnPct, 'f', -1, 64),
+		"AUTO_REVIEW_LOSS_STREAK_WARN":          strconv.Itoa(cfg.AutoReviewLossStreakWarn),
+		"AUTO_REVIEW_RISK_REDUCE_FACTOR":        strconv.FormatFloat(cfg.AutoReviewRiskReduceFactor, 'f', -1, 64),
+		"AUTO_STRATEGY_REGEN_ENABLED":           strconv.FormatBool(cfg.AutoStrategyRegenEnabled),
+		"AUTO_STRATEGY_REGEN_COOLDOWN_SEC":      strconv.Itoa(cfg.AutoStrategyRegenCooldownSec),
+		"AUTO_STRATEGY_REGEN_LOSS_STREAK":       strconv.Itoa(cfg.AutoStrategyRegenLossStreak),
+		"AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT": strconv.FormatFloat(cfg.AutoStrategyRegenDrawdownWarnPct, 'f', -1, 64),
+		"AUTO_STRATEGY_REGEN_MIN_RR":            strconv.FormatFloat(cfg.AutoStrategyRegenMinRR, 'f', -1, 64),
+	}
+	if err := upsertDotEnv(".env", updates); err != nil {
+		return err
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	applyRuntimeConfigFromEnv()
+	return nil
 }
 
 func (s *Service) handleRunNow(w http.ResponseWriter, r *http.Request) {

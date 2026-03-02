@@ -123,7 +123,7 @@ func (s *Service) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content := chat.Choices[0].Message.Content
-	recordLLMUsage("chat_assistant", prompt, content)
+	recordLLMUsageWithMeta("chat_assistant", model, prompt, content)
 	obj, ok := extractJSONObject(content)
 	if !ok {
 		writeError(w, http.StatusBadGateway, "LLM 未返回可解析JSON")
@@ -196,22 +196,34 @@ func extractJSONObject(s string) (string, bool) {
 
 func tradeConfigMap(cfg config.TradeConfig) map[string]any {
 	return map[string]any{
-		"symbol":                     cfg.Symbol,
-		"amount":                     cfg.Amount,
-		"high_confidence_amount":     cfg.HighConfidenceAmount,
-		"low_confidence_amount":      cfg.LowConfidenceAmount,
-		"position_sizing_mode":       cfg.PositionSizingMode,
-		"high_confidence_margin_pct": cfg.HighConfidenceMarginPct,
-		"low_confidence_margin_pct":  cfg.LowConfidenceMarginPct,
-		"leverage":                   cfg.Leverage,
-		"timeframe":                  cfg.Timeframe,
-		"test_mode":                  cfg.TestMode,
-		"data_points":                cfg.DataPoints,
-		"max_risk_per_trade_pct":     cfg.MaxRiskPerTradePct,
-		"max_position_pct":           cfg.MaxPositionPct,
-		"max_consecutive_losses":     cfg.MaxConsecutiveLosses,
-		"max_daily_loss_pct":         cfg.MaxDailyLossPct,
-		"max_drawdown_pct":           cfg.MaxDrawdownPct,
-		"liquidation_buffer_pct":     cfg.LiquidationBufferPct,
+		"symbol":                                cfg.Symbol,
+		"amount":                                cfg.Amount,
+		"high_confidence_amount":                cfg.HighConfidenceAmount,
+		"low_confidence_amount":                 cfg.LowConfidenceAmount,
+		"position_sizing_mode":                  cfg.PositionSizingMode,
+		"high_confidence_margin_pct":            cfg.HighConfidenceMarginPct,
+		"low_confidence_margin_pct":             cfg.LowConfidenceMarginPct,
+		"leverage":                              cfg.Leverage,
+		"timeframe":                             cfg.Timeframe,
+		"test_mode":                             cfg.TestMode,
+		"data_points":                           cfg.DataPoints,
+		"max_risk_per_trade_pct":                cfg.MaxRiskPerTradePct,
+		"max_position_pct":                      cfg.MaxPositionPct,
+		"max_consecutive_losses":                cfg.MaxConsecutiveLosses,
+		"max_daily_loss_pct":                    cfg.MaxDailyLossPct,
+		"max_drawdown_pct":                      cfg.MaxDrawdownPct,
+		"liquidation_buffer_pct":                cfg.LiquidationBufferPct,
+		"auto_review_enabled":                   cfg.AutoReviewEnabled,
+		"auto_review_after_order_only":          cfg.AutoReviewAfterOrderOnly,
+		"auto_review_interval_sec":              cfg.AutoReviewIntervalSec,
+		"auto_review_volatility_pct":            cfg.AutoReviewVolatilityPct,
+		"auto_review_drawdown_warn_pct":         cfg.AutoReviewDrawdownWarnPct,
+		"auto_review_loss_streak_warn":          cfg.AutoReviewLossStreakWarn,
+		"auto_review_risk_reduce_factor":        cfg.AutoReviewRiskReduceFactor,
+		"auto_strategy_regen_enabled":           cfg.AutoStrategyRegenEnabled,
+		"auto_strategy_regen_cooldown_sec":      cfg.AutoStrategyRegenCooldownSec,
+		"auto_strategy_regen_loss_streak":       cfg.AutoStrategyRegenLossStreak,
+		"auto_strategy_regen_drawdown_warn_pct": cfg.AutoStrategyRegenDrawdownWarnPct,
+		"auto_strategy_regen_min_rr":            cfg.AutoStrategyRegenMinRR,
 	}
 }

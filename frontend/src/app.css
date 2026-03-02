@@ -1746,12 +1746,6 @@ button:disabled {
   color: #3b5570;
 }
 
-.prompt-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-}
-
 .template-block {
   margin-top: 10px;
   border: 1px solid #dbe4ed;
@@ -1928,6 +1922,262 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.workflow-pane {
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.workflow-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workflow-node {
+  width: 250px;
+  border: 1px solid #d7e3ee;
+  border-radius: 12px;
+  background: #f6faff;
+  padding: 10px;
+}
+
+.workflow-node.is-enabled {
+  border-color: #9fc2eb;
+  background: #eef6ff;
+}
+
+.workflow-node.is-disabled {
+  border-color: #d5dde7;
+  background: #f4f6f9;
+  opacity: 0.82;
+}
+
+.workflow-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.workflow-node-head b {
+  font-size: 13px;
+  color: #23405e;
+}
+
+.workflow-node-head span {
+  font-size: 11px;
+  color: #62809c;
+}
+
+.workflow-node p {
+  margin: 0;
+  font-size: 12px;
+  color: #4c6781;
+  min-height: 34px;
+}
+
+.workflow-node-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.workflow-node-meta span {
+  font-size: 11px;
+  color: #57728c;
+  border: 1px solid #d2deea;
+  background: #f9fcff;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.workflow-arrow {
+  font-size: 20px;
+  color: #5d7ea3;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.workflow-steps-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.workflow-step-editor {
+  border: 1px solid #dbe5ef;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 10px;
+}
+
+.workflow-step-editor-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.workflow-step-editor-title b {
+  font-size: 13px;
+  color: #2f4963;
+}
+
+.workflow-step-editor-title span {
+  font-size: 11px;
+  color: #617d97;
+}
+
+.workflow-step-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workflow-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d7e3ef;
+  border-radius: 8px;
+  background: #f2f8ff;
+}
+
+.workflow-check input {
+  width: 16px;
+  height: 16px;
+}
+
+.workflow-check span {
+  font-size: 12px;
+  color: #36526d;
+}
+
+.workflow-constraints-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workflow-prompts-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.workflow-prompts-grid textarea {
+  min-height: 120px;
+}
+
+.workflow-log-toolbar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 200px));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.workflow-log-list {
+  display: grid;
+  gap: 10px;
+  max-height: 760px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.workflow-log-item {
+  border: 1px solid #dbe5ef;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 10px;
+}
+
+.workflow-log-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workflow-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.workflow-log-meta b {
+  font-size: 13px;
+  color: #2c4761;
+}
+
+.workflow-log-meta span {
+  font-size: 12px;
+  color: #597691;
+}
+
+.workflow-log-token {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workflow-log-token span {
+  font-size: 12px;
+  color: #335473;
+  border: 1px solid #d2dfed;
+  background: #f2f8ff;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.workflow-log-detail {
+  margin-top: 8px;
+}
+
+.workflow-log-detail summary {
+  cursor: pointer;
+  color: #3d5f82;
+  font-size: 12px;
+  user-select: none;
+}
+
+.workflow-log-content {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workflow-log-block {
+  border: 1px solid #d8e3ee;
+  border-radius: 8px;
+  background: #f4f8fc;
+  padding: 8px;
+}
+
+.workflow-log-block h5 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #375874;
+}
+
+.workflow-log-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #2d4762;
 }
 
 .history-layout {
@@ -2178,9 +2428,9 @@ td {
 }
 
 .llm-status-badge.is-reachable {
-  border-color: #b8d2ff;
-  background: #edf4ff;
-  color: #2459a6;
+  border-color: #b8e6c5;
+  background: #ecf9f0;
+  color: #1f7a3f;
 }
 
 .llm-status-badge.is-unreachable {
@@ -2247,10 +2497,10 @@ td {
 }
 
 .status-running,
-.status-connected,
-.status-configured {
-  border-color: #bdd6ff;
-  background: #edf4ff;
+.status-configured,
+.status-connected {
+  border-color: #b8e6c5;
+  background: #ecf9f0;
 }
 
 .status-warning,
@@ -2610,6 +2860,86 @@ td {
   color: #e8f2ff;
 }
 
+[data-theme='dark'] .workflow-node {
+  background: #223547;
+  border-color: #3b4f66;
+}
+
+[data-theme='dark'] .workflow-node.is-enabled {
+  background: #2a4158;
+  border-color: #5f7ea3;
+}
+
+[data-theme='dark'] .workflow-node.is-disabled {
+  background: #1d2f40;
+  border-color: #3b4f66;
+}
+
+[data-theme='dark'] .workflow-node-head b {
+  color: #dce8f4;
+}
+
+[data-theme='dark'] .workflow-node-head span,
+[data-theme='dark'] .workflow-node p,
+[data-theme='dark'] .workflow-node-meta span,
+[data-theme='dark'] .workflow-arrow,
+[data-theme='dark'] .workflow-step-editor-title span,
+[data-theme='dark'] .workflow-check span {
+  color: #bfd0e1;
+}
+
+[data-theme='dark'] .workflow-node-meta span {
+  border-color: #4c627b;
+  background: #1e3144;
+}
+
+[data-theme='dark'] .workflow-step-editor {
+  background: #1d2f41;
+  border-color: #3b4f66;
+}
+
+[data-theme='dark'] .workflow-step-editor-title b {
+  color: #dce8f4;
+}
+
+[data-theme='dark'] .workflow-check {
+  border-color: #46607a;
+  background: #23374b;
+}
+
+[data-theme='dark'] .workflow-log-item {
+  background: #1d2f41;
+  border-color: #3b4f66;
+}
+
+[data-theme='dark'] .workflow-log-meta b {
+  color: #dce8f4;
+}
+
+[data-theme='dark'] .workflow-log-meta span,
+[data-theme='dark'] .workflow-log-detail summary {
+  color: #bfd0e1;
+}
+
+[data-theme='dark'] .workflow-log-token span {
+  border-color: #4c627b;
+  background: #22374b;
+  color: #d8e6f4;
+}
+
+[data-theme='dark'] .workflow-log-block {
+  border-color: #3f556d;
+  background: #23374b;
+}
+
+[data-theme='dark'] .workflow-log-block h5 {
+  color: #dce8f4;
+}
+
+[data-theme='dark'] .workflow-log-block pre {
+  color: #d2e1f0;
+}
+
 [data-theme='dark'] .history-list-panel {
   background: #2a4158;
   border-color: #4b667f;
@@ -2653,10 +2983,10 @@ td {
 }
 
 [data-theme='dark'] .status-running,
-[data-theme='dark'] .status-connected,
-[data-theme='dark'] .status-configured {
-  border-color: #4e6b94;
-  background: #2a3f59;
+[data-theme='dark'] .status-configured,
+[data-theme='dark'] .status-connected {
+  border-color: #78a6e3;
+  background: #2f4d72;
 }
 
 [data-theme='dark'] .status-warning,
@@ -2674,9 +3004,9 @@ td {
 }
 
 [data-theme='dark'] .llm-status-badge.is-reachable {
-  border-color: #4e6b94;
-  background: #2a3f59;
-  color: #c8dcf7;
+  border-color: #78a6e3;
+  background: #2f4d72;
+  color: #e6f1ff;
 }
 
 [data-theme='dark'] .llm-status-badge.is-unreachable {
@@ -3579,6 +3909,15 @@ th {
   .form-grid.backtest-grid .bt-position-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .workflow-step-fields,
+  .workflow-constraints-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workflow-log-content {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -3600,6 +3939,7 @@ th {
   .asset-layout,
   .rule-layout,
   .distribution-wrap,
+  .workflow-constraints-grid,
   .form-grid.wide {
     grid-template-columns: 1fr;
   }
@@ -3690,6 +4030,14 @@ th {
   }
 
   .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-step-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-log-toolbar {
     grid-template-columns: 1fr;
   }
 }
