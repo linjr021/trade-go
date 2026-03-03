@@ -60,6 +60,22 @@ function formatConfidence(value) {
   return v || '-'
 }
 
+function executionStatusText(code, approved, signal) {
+  const c = String(code || '').trim().toLowerCase()
+  const s = String(signal || '').trim().toUpperCase()
+  if (c === 'paper_simulated' || c === 'simulated' || c === 'executed' || c === 'filled') return '已执行'
+  if (c === 'hold') return '本轮 HOLD'
+  if (c === 'paper_risk_blocked' || c === 'risk_blocked') return '风控阻断'
+  if (c === 'paper_strategy_fallback') return '信号回退'
+  if (c === 'paper_market_unavailable') return '行情不可用'
+  if (c === 'paper_pending') return '待执行'
+  if (c === 'order_plan_invalid') return '下单计划无效'
+  if (c === 'balance_unavailable') return '余额不可用'
+  if (typeof approved === 'boolean') return approved ? '已执行' : '未执行'
+  if (s === 'HOLD') return '本轮 HOLD'
+  return '-'
+}
+
 function StrategyRuntimeTab({
   currentStrategies = [],
   strategyHistory = [],
@@ -96,6 +112,8 @@ function StrategyRuntimeTab({
   const previewExecuted = typeof preview?.executed === 'boolean' ? preview.executed : null
   const previewApprovedText = previewApproved == null ? '-' : (previewApproved ? '可开仓' : '风控阻断')
   const previewExecutedText = previewExecuted == null ? '-' : (previewExecuted ? '已执行' : '未执行')
+  const currentExecutionStatus = String(preview?.currentExecutionStatus || '').trim() || previewExecutedText
+  const lastExecutionStatus = String(preview?.lastExecutionStatus || '').trim() || '-'
   const previewApprovedSize = fmtPrice(preview?.approvedSize, 4)
   const previewSuggestedSize = fmtPrice(preview?.suggestedSize, 4)
 
@@ -133,7 +151,8 @@ function StrategyRuntimeTab({
             <p><span>信心</span><b>{formatConfidence(preview?.confidence)}</b></p>
             <p><span>策略组合</span><b>{previewStrategy}</b></p>
             <p><span>开仓判定</span><b>{previewApprovedText}</b></p>
-            <p><span>执行状态</span><b>{previewExecutedText}</b></p>
+            <p><span>本轮执行</span><b>{currentExecutionStatus}</b></p>
+            <p><span>最近执行</span><b>{lastExecutionStatus}</b></p>
             <p><span>建议数量</span><b>{previewSuggestedSize}</b></p>
             <p><span>风控后数量</span><b>{previewApprovedSize}</b></p>
             <p className="full"><span>理由</span><b>{previewReason}</b></p>
@@ -242,10 +261,17 @@ export function LivePageSection(p) {
     const previewStrategy = String((orderPreview?.strategy_combo ?? orderPreview?.strategyCombo ?? sig?.strategy_combo ?? sig?.strategyCombo) || '').trim() || '-'
     const previewApproved = orderPreview?.approved
     const previewExecuted = orderPreview?.executed
+    const previewExecutionCode = String(orderPreview?.execution_code ?? orderPreview?.executionCode ?? '').trim()
     const previewApprovedSize = Number(orderPreview?.approved_size ?? orderPreview?.approvedSize ?? 0)
     const previewSuggestedSize = Number(orderPreview?.suggested_size ?? orderPreview?.suggestedSize ?? 0)
     const previewRiskReason = String((orderPreview?.risk_reason ?? orderPreview?.riskReason) || '').trim()
     const previewReasonText = String(orderPreview?.reason || sig?.reason || '').trim()
+    const liveRows = Array.isArray(tradeRecords) ? tradeRecords : []
+    const liveLastExecuted = liveRows.find((row) => {
+      const rowSignal = String(row?.signal || '').toUpperCase()
+      const rowApproved = row?.approved === undefined ? rowSignal !== 'HOLD' : Boolean(row?.approved)
+      return rowApproved && rowSignal !== 'HOLD'
+    })
     const finalReason = previewRiskReason || previewReasonText || (previewSignal === 'HOLD' ? '信号不足，保持观望' : '')
     return {
       signal: previewSignal,
@@ -259,10 +285,14 @@ export function LivePageSection(p) {
       strategyCombo: previewStrategy,
       approved: typeof previewApproved === 'boolean' ? previewApproved : null,
       executed: typeof previewExecuted === 'boolean' ? previewExecuted : null,
+      currentExecutionStatus: executionStatusText(previewExecutionCode, previewApproved, previewSignal),
+      lastExecutionStatus: liveLastExecuted
+        ? `已执行（${formatBeijingClock(liveLastExecuted?.ts)}）`
+        : '暂无已执行记录',
       approvedSize: Number.isFinite(previewApprovedSize) ? previewApprovedSize : 0,
       suggestedSize: Number.isFinite(previewSuggestedSize) ? previewSuggestedSize : 0,
     }
-  }, [status, liveMarketSnapshot])
+  }, [status, liveMarketSnapshot, tradeRecords])
 
   return (
     <section className="stack">
@@ -562,6 +592,7 @@ export function PaperPageSection(p) {
     const combo = String((src?.strategy_combo ?? src?.strategyCombo) || '').trim()
     const approvedSize = Number(src?.approved_size ?? src?.approvedSize ?? 0)
     const executedCode = String(src?.execution_code ?? src?.executionCode ?? '').trim().toLowerCase()
+    const approved = typeof src?.approved === 'boolean' ? src.approved : null
     return {
       signal,
       price: Number(src?.price || 0),
@@ -570,10 +601,14 @@ export function PaperPageSection(p) {
       confidence,
       reason: reason || '本地模拟规则（价格动量）',
       strategyCombo: combo || paperSelectedStrategyText || '-',
-      approved: typeof src?.approved === 'boolean' ? src.approved : null,
+      approved,
       executed: executedCode === ''
         ? null
         : (executedCode === 'paper_simulated' || executedCode === 'simulated'),
+      currentExecutionStatus: executionStatusText(executedCode, approved, signal),
+      lastExecutionStatus: lastPaperRecord
+        ? `已执行（${formatBeijingClock(lastPaperRecord?.ts)}）`
+        : '暂无已执行记录',
       approvedSize: Number.isFinite(approvedSize) ? approvedSize : 0,
       suggestedSize: Number.isFinite(approvedSize) ? approvedSize : 0,
     }
