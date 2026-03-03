@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fmtNum, fmtPct } from '@/modules/format'
 
@@ -1273,6 +1272,61 @@ export function AssetTrendChart({ points, range = '30D' }) {
         return 30
     }
   })()
+  const now = new Date()
+  const endTime = now.getTime()
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  start.setDate(start.getDate() - (rangeDays - 1))
+  const startTime = start.getTime()
+  const windowMs = Math.max(1, endTime - startTime)
+
+  const parsedPoints = points
+    .map((p) => {
+      const tsMs = Date.parse(String(p?.ts || ''))
+      const eq = Number(p?.equity || 0)
+      if (!Number.isFinite(tsMs) || !Number.isFinite(eq)) return null
+      return {
+        ts: String(p?.ts || ''),
+        tsMs,
+        equity: Math.max(0, eq),
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.tsMs - b.tsMs)
+  if (!parsedPoints.length) return <p className="muted">暂无资产趋势数据</p>
+
+  const inWindow = parsedPoints.filter((p) => p.tsMs >= startTime && p.tsMs <= endTime)
+  let safePoints = inWindow
+  if (!safePoints.length) {
+    const latest = parsedPoints[parsedPoints.length - 1]
+    safePoints = latest ? [latest] : []
+  }
+  if (!safePoints.length) return <p className="muted">暂无资产趋势数据</p>
+  if (safePoints[0].tsMs > startTime) {
+    safePoints = [
+      { ...safePoints[0], ts: new Date(startTime).toISOString(), tsMs: startTime },
+      ...safePoints,
+    ]
+  }
+  if (safePoints[safePoints.length - 1].tsMs < endTime) {
+    const last = safePoints[safePoints.length - 1]
+    safePoints = [
+      ...safePoints,
+      { ...last, ts: new Date(endTime).toISOString(), tsMs: endTime },
+    ]
+  }
+
+  // 长周期下保留时间分布，避免曲线“总是一样”
+  if (safePoints.length > 600) {
+    const step = Math.ceil(safePoints.length / 600)
+    const sampled = []
+    for (let i = 0; i < safePoints.length; i += step) sampled.push(safePoints[i])
+    if (sampled[sampled.length - 1]?.tsMs !== safePoints[safePoints.length - 1]?.tsMs) {
+      sampled.push(safePoints[safePoints.length - 1])
+    }
+    safePoints = sampled
+  }
+
   const width = 920
   const height = 280
   const left = 58
@@ -1281,18 +1335,14 @@ export function AssetTrendChart({ points, range = '30D' }) {
   const bottom = 34
   const innerW = width - left - right
   const innerH = height - top - bottom
-  const safePoints = points.map((p) => {
-    const n = Number(p?.equity || 0)
-    return {
-      ts: p?.ts || '',
-      equity: Number.isFinite(n) ? Math.max(0, n) : 0,
-    }
-  })
   const maxV = Math.max(1, ...safePoints.map((x) => x.equity))
   const minV = 0
   const span = Math.max(maxV - minV, 1e-9)
-  const step = safePoints.length > 1 ? innerW / (safePoints.length - 1) : 0
-  const x = (idx) => (safePoints.length > 1 ? (left + step * idx) : (width - right))
+  const xByTs = (tsMs) => {
+    const ratio = Math.max(0, Math.min(1, (tsMs - startTime) / windowMs))
+    return left + ratio * innerW
+  }
+  const x = (idx) => xByTs(Number(safePoints[idx]?.tsMs || endTime))
   const y = (v) => top + ((maxV - v) / span) * innerH
   const fmtAxisNum = (v) => {
     const n = Number(v || 0)
@@ -1302,12 +1352,6 @@ export function AssetTrendChart({ points, range = '30D' }) {
       maximumFractionDigits: 2,
     })
   }
-  const now = new Date()
-  const endTime = now.getTime()
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  start.setDate(start.getDate() - (rangeDays - 1))
-  const startTime = start.getTime()
   const pad2 = (n) => String(n).padStart(2, '0')
   const fmtXAxisTime = (ts) => {
     const d = new Date(ts)
@@ -1345,7 +1389,7 @@ export function AssetTrendChart({ points, range = '30D' }) {
   })()
   const xTicks = xTickIndexes.map((idx) => {
     const ratio = safePoints.length > 1 ? (idx / (safePoints.length - 1)) : 1
-    const tickTs = new Date(startTime + (endTime - startTime) * ratio)
+    const tickTs = new Date(startTime + windowMs * ratio)
     return {
       key: `x-${idx}`,
       x: x(idx),
@@ -1553,7 +1597,7 @@ export function AssetDistributionChart({ items }) {
               )
               : (a.type === 'arc'
                 ? (
-                  <path key={`arc-${i}`} d={a.d} fill="none" stroke={a.color} strokeWidth={stroke} strokeLinecap="round" />
+                  <path key={`arc-${i}`} d={'d' in a ? a.d : ''} fill="none" stroke={a.color} strokeWidth={stroke} strokeLinecap="round" />
                 )
                 : null)
           ))}

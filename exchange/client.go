@@ -54,6 +54,13 @@ func (c *Client) FetchBalance() (float64, error) {
 	return c.impl.FetchBalance()
 }
 
+func (c *Client) FetchAvailableBalance() (float64, error) {
+	if c == nil || c.impl == nil {
+		return 0, fmt.Errorf("exchange client not initialized")
+	}
+	return c.impl.FetchAvailableBalance()
+}
+
 func (c *Client) SetLeverage(symbol string, leverage int) error {
 	if c == nil || c.impl == nil {
 		return fmt.Errorf("exchange client not initialized")

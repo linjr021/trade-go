@@ -1,4 +1,3 @@
-// @ts-nocheck
 
 export function TopToast({ toast }) {
   if (!toast?.visible) return null

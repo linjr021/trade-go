@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { AssetsPageSection } from '@/modules/assets-page-section'
 import { BacktestPageSection, BuilderPageSection, SkillWorkflowPageSection } from '@/modules/builder-backtest-sections'
 import { LivePageSection, PaperPageSection } from '@/modules/live-paper-sections'
@@ -31,6 +30,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           strategyPickerOpen={c.strategyPickerOpen}
           setStrategyPickerOpen={c.setStrategyPickerOpen}
           enabledStrategies={c.enabledStrategies}
+          strategyMetaMap={c.strategyMetaMap}
           setStrategyDraft={c.setStrategyDraft}
           selectedStrategyText={c.selectedStrategyText}
           executionStrategyOptions={c.executionStrategyOptions}
@@ -44,14 +44,19 @@ export function DashboardContent({ c, renderOverviewCards }) {
           refreshCore={c.refreshCore}
           runningNow={c.runningNow}
           runOneCycle={c.runOneCycle}
+          startLiveTrading={c.startLiveTrading}
+          startingLive={c.startingLive}
           toggleScheduler={c.toggleScheduler}
           schedulerRunning={c.schedulerRunning}
           savingSettings={c.savingSettings}
           saveLiveConfig={c.saveLiveConfig}
+          status={c.status}
           liveViewTab={c.liveViewTab}
           setLiveViewTab={c.setLiveViewTab}
           renderOverviewCards={renderOverviewCards}
           liveStrategyLabel={c.liveStrategyLabel}
+          liveStrategyHistory={c.liveStrategyHistory}
+          liveMarketSnapshot={c.liveMarketSnapshot}
           tradeRecords={c.tradeRecords}
         />
       )}
@@ -65,6 +70,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           paperStrategyPickerOpen={c.paperStrategyPickerOpen}
           setPaperStrategyPickerOpen={c.setPaperStrategyPickerOpen}
           paperStrategySelection={c.paperStrategySelection}
+          strategyMetaMap={c.strategyMetaMap}
           setPaperStrategyDraft={c.setPaperStrategyDraft}
           paperSelectedStrategyText={c.paperSelectedStrategyText}
           executionStrategyOptions={c.executionStrategyOptions}
@@ -85,6 +91,10 @@ export function DashboardContent({ c, renderOverviewCards }) {
           setPaperViewTab={c.setPaperViewTab}
           renderOverviewCards={renderOverviewCards}
           paperTradeRecords={c.paperTradeRecords}
+          paperLatestDecision={c.paperLatestDecision}
+          paperStrategyHistory={c.paperStrategyHistory}
+          paperPnlBaselineMap={c.paperPnlBaselineMap}
+          resetPaperCurrentPnL={c.resetPaperCurrentPnL}
         />
       )}
 
@@ -126,13 +136,6 @@ export function DashboardContent({ c, renderOverviewCards }) {
           setGenAllowReversal={c.setGenAllowReversal}
           generateStrategy={c.generateStrategy}
           generatingStrategy={c.generatingStrategy}
-          setUploadFile={c.setUploadFile}
-          loadStrategyTemplate={c.loadStrategyTemplate}
-          loadingTemplate={c.loadingTemplate}
-          copyStrategyTemplate={c.copyStrategyTemplate}
-          uploadStrategy={c.uploadStrategy}
-          uploadingStrategy={c.uploadingStrategy}
-          strategyTemplate={c.strategyTemplate}
           generatedStrategies={c.generatedStrategies}
           selectedRuleId={c.selectedRuleId}
           setSelectedRuleId={c.setSelectedRuleId}
@@ -151,6 +154,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           skillWorkflow={c.skillWorkflow}
           loadingSkillWorkflow={c.loadingSkillWorkflow}
           savingSkillWorkflow={c.savingSkillWorkflow}
+          runningWorkflowUpgradeNow={c.runningWorkflowUpgradeNow}
           aiWorkflowTab={c.aiWorkflowTab}
           setAiWorkflowTab={c.setAiWorkflowTab}
           aiWorkflowLogs={c.aiWorkflowLogs}
@@ -170,6 +174,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           updateSkillPromptField={c.updateSkillPromptField}
           saveSkillWorkflowConfig={c.saveSkillWorkflowConfig}
           resetSkillWorkflowConfig={c.resetSkillWorkflowConfig}
+          runWorkflowUpgradeNow={c.runWorkflowUpgradeNow}
           loadSkillWorkflowConfig={c.loadSkillWorkflowConfig}
           loadAIWorkflowLogs={c.loadAIWorkflowLogs}
           fmtNum={fmtNum}
@@ -251,7 +256,6 @@ export function DashboardContent({ c, renderOverviewCards }) {
           saveSystemEnv={c.saveSystemEnv}
           setEditingLLMId={c.setEditingLLMId}
           resetLLMModalDraft={c.resetLLMModalDraft}
-          setNewLLM={c.setNewLLM}
           setShowLLMModal={c.setShowLLMModal}
           llmProductCatalog={c.llmProductCatalog}
           llmConfigs={c.llmConfigs}

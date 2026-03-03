@@ -99,7 +99,7 @@ func (c *okxClient) signPayload(preHash string) string {
 
 func (c *okxClient) requestPublic(path string, values url.Values) ([]byte, error) {
 	fullURL := okxBaseURL + path
-	if values != nil && len(values) > 0 {
+	if len(values) > 0 {
 		fullURL += "?" + values.Encode()
 	}
 	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
@@ -135,7 +135,7 @@ func (c *okxClient) requestSigned(method, path string, query url.Values, body []
 	}
 
 	requestPath := path
-	if query != nil && len(query) > 0 {
+	if len(query) > 0 {
 		requestPath += "?" + query.Encode()
 	}
 	bodyStr := ""
@@ -271,6 +271,48 @@ func (c *okxClient) FetchBalance() (float64, error) {
 			return v, nil
 		}
 		if v, err := strconv.ParseFloat(strings.TrimSpace(d.AvailBal), 64); err == nil && v > 0 {
+			return v, nil
+		}
+	}
+	return 0, nil
+}
+
+func (c *okxClient) FetchAvailableBalance() (float64, error) {
+	query := url.Values{}
+	query.Set("ccy", "USDT")
+	data, err := c.requestSigned(http.MethodGet, "/api/v5/account/balance", query, nil)
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			AvailEq string `json:"availEq"`
+			Details []struct {
+				Ccy      string `json:"ccy"`
+				AvailBal string `json:"availBal"`
+				CashBal  string `json:"cashBal"`
+			} `json:"details"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return 0, err
+	}
+	if len(resp.Data) == 0 {
+		return 0, nil
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(resp.Data[0].AvailEq), 64); err == nil && v >= 0 {
+		return v, nil
+	}
+	for _, d := range resp.Data[0].Details {
+		if !strings.EqualFold(strings.TrimSpace(d.Ccy), "USDT") {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(d.AvailBal), 64); err == nil && v >= 0 {
+			return v, nil
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(d.CashBal), 64); err == nil && v >= 0 {
 			return v, nil
 		}
 	}

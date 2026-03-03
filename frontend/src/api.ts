@@ -8,53 +8,48 @@ const http = axios.create({
 export const getStatus = () => http.get('/status')
 export const getAccount = () => http.get('/account')
 export const getAssetOverview = () => http.get('/assets/overview')
-export const getAssetTrend = (range = '30D') => http.get('/assets/trend', { params: { range } })
-export const getAssetPnLCalendar = (month) => http.get('/assets/pnl-calendar', { params: { month } })
+export const getAssetTrend = (range: string = '30D') => http.get('/assets/trend', { params: { range } })
+export const getAssetPnLCalendar = (month: string) => http.get('/assets/pnl-calendar', { params: { month } })
 export const getAssetDistribution = () => http.get('/assets/distribution')
-export const getSignals = (limit = 20) => http.get('/signals', { params: { limit } })
-export const getTradeRecords = (limit = 40) => http.get('/trade-records', { params: { limit } })
-export const getStrategyScores = (limit = 20) => http.get('/strategy-scores', { params: { limit } })
+export const getMarketSnapshot = (params: Record<string, any> = {}) => http.get('/market/snapshot', { params })
+export const getTradeRecords = (limit: number = 40) => http.get('/trade-records', { params: { limit } })
+export const getStrategyScores = (limit: number = 20) => http.get('/strategy-scores', { params: { limit } })
 export const getStrategies = () => http.get('/strategies')
-export const getStrategyTemplate = () => http.get('/strategies/template')
 export const getGeneratedStrategies = () => http.get('/generated-strategies')
-export const syncGeneratedStrategies = (strategies) =>
+export const syncGeneratedStrategies = (strategies: any[]) =>
   http.post('/generated-strategies', { strategies }, { timeout: 30000 })
-export const uploadStrategyFile = (file) => {
-  const form = new FormData()
-  form.append('file', file)
-  return http.post('/strategies/upload', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000,
-  })
-}
-export const generateStrategyPreference = (payload) =>
+export const generateStrategyPreference = (payload: Record<string, any>) =>
   http.post('/strategy-preference/generate', payload, { timeout: 120000 })
 export const getSkillWorkflow = () => http.get('/skill-workflow')
-export const saveSkillWorkflow = (workflow) => http.post('/skill-workflow', { workflow })
+export const saveSkillWorkflow = (workflow: Record<string, any>) => http.post('/skill-workflow', { workflow })
 export const resetSkillWorkflow = () => http.post('/skill-workflow', { reset_default: true })
-export const getLLMUsageLogs = (params = {}) => http.get('/llm-usage/logs', { params })
-export const runBacktestApi = (payload) => http.post('/backtest', payload, { timeout: 120000 })
-export const getBacktestHistory = (limit = 80) => http.get('/backtest-history', { params: { limit } })
-export const getBacktestHistoryDetail = (id) => http.get('/backtest-history/detail', { params: { id } })
-export const deleteBacktestHistory = (id) => http.post('/backtest-history/delete', { id })
+export const getLLMUsageLogs = (params: Record<string, any> = {}) => http.get('/llm-usage/logs', { params })
+export const runAutoStrategyRegenNow = (payload: Record<string, any> = {}) =>
+  http.post('/auto-strategy/regen-now', payload, { timeout: 90000 })
+export const runBacktestApi = (payload: Record<string, any>) => http.post('/backtest', payload, { timeout: 120000 })
+export const getBacktestHistory = (limit: number = 80) => http.get('/backtest-history', { params: { limit } })
+export const getBacktestHistoryDetail = (id: number) => http.get('/backtest-history/detail', { params: { id } })
+export const deleteBacktestHistory = (id: number) => http.post('/backtest-history/delete', { id })
 export const getSystemSettings = () => http.get('/system-settings')
-export const saveSystemSettings = (settings) => http.post('/system-settings', { settings })
+export const saveSystemSettings = (settings: Record<string, any>) => http.post('/system-settings', { settings })
 export const getSystemRuntimeStatus = () => http.get('/system/runtime')
 export const restartSystemRuntime = () => http.post('/system/restart', {}, { timeout: 90000 })
 export const getIntegrations = () => http.get('/integrations')
-export const addLLMIntegration = (payload) => http.post('/integrations/llm', payload, { timeout: 30000 })
-export const testLLMIntegration = (id) => http.post('/integrations/llm/test', { id }, { timeout: 30000 })
-export const probeLLMModels = (payload) => http.post('/integrations/llm/models', payload, { timeout: 45000 })
-export const updateLLMIntegration = (payload) => http.post('/integrations/llm/update', payload, { timeout: 30000 })
-export const deleteLLMIntegration = (id) => http.post('/integrations/llm/delete', { id }, { timeout: 30000 })
-export const addExchangeIntegration = (payload) =>
+export const addLLMIntegration = (payload: Record<string, any>) => http.post('/integrations/llm', payload, { timeout: 30000 })
+export const testLLMIntegration = (id: string) => http.post('/integrations/llm/test', { id }, { timeout: 30000 })
+export const probeLLMModels = (payload: Record<string, any>) => http.post('/integrations/llm/models', payload, { timeout: 45000 })
+export const updateLLMIntegration = (payload: Record<string, any>) => http.post('/integrations/llm/update', payload, { timeout: 30000 })
+export const deleteLLMIntegration = (id: string) => http.post('/integrations/llm/delete', { id }, { timeout: 30000 })
+export const addExchangeIntegration = (payload: Record<string, any>) =>
   http.post('/integrations/exchange', payload, { timeout: 30000 })
-export const activateExchangeIntegration = (id) =>
+export const activateExchangeIntegration = (id: string) =>
   http.post('/integrations/exchange/activate', { id }, { timeout: 30000 })
-export const deleteExchangeIntegration = (id) =>
+export const deleteExchangeIntegration = (id: string) =>
   http.post('/integrations/exchange/delete', { id }, { timeout: 30000 })
 
-export const updateSettings = (payload) => http.post('/settings', payload)
+export const updateSettings = (payload: Record<string, any>) => http.post('/settings', payload)
 export const runNow = () => http.post('/run')
 export const startScheduler = () => http.post('/scheduler/start')
 export const stopScheduler = () => http.post('/scheduler/stop')
+export const runPaperSimulateStep = (payload: Record<string, any>) =>
+  http.post('/paper/simulate-step', payload, { timeout: 90000 })

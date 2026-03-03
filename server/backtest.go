@@ -206,8 +206,8 @@ func (s *Service) handleBacktest(w http.ResponseWriter, r *http.Request) {
 			slMult = 1.3
 			tpMult = 2.4
 		}
-		stopLoss := cur.Close
-		takeProfit := cur.Close
+		var stopLoss float64
+		var takeProfit float64
 		if side == "BUY" {
 			stopLoss = cur.Close - atr*slMult
 			takeProfit = cur.Close + atr*tpMult

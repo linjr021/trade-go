@@ -1,7 +1,197 @@
-// @ts-nocheck
+import { useEffect, useMemo, useState } from 'react'
 import { ActionButton } from '@/components/ui/action-button'
 import { Space, Tabs } from '@/components/ui/dashboard-primitives'
 import { TradeRecordsTable } from '@/modules/trade-tables'
+
+function formatBeijingDateTime(value) {
+  const raw = String(value || '').trim()
+  if (!raw || raw === '-') return '-'
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return raw
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(d)
+  const map: Record<string, string> = {}
+  for (const p of parts) map[p.type] = p.value
+  return `${map.year || '0000'}-${map.month || '00'}-${map.day || '00'} ${map.hour || '00'}:${map.minute || '00'}:${map.second || '00'}`
+}
+
+function formatBeijingClock(value) {
+  const full = formatBeijingDateTime(value)
+  if (full === '-' || full.length < 19) return full
+  return full.slice(11, 19)
+}
+
+function getStrategyMeta(name, strategyMetaMap = {}, row = null) {
+  const strategyName = String(name || '').trim()
+  const fromHistory = row?.meta?.[strategyName]
+  const fromMap = strategyMetaMap?.[strategyName]
+  const meta = fromHistory || fromMap || {}
+  const source = String(meta?.source || '').trim() || '外部/手动'
+  const workflowVersion = String(meta?.workflowVersion || meta?.workflow_version || '').trim() || '-'
+  const lastUpdatedAt = String(meta?.lastUpdatedAt || meta?.last_updated_at || '').trim() || '-'
+  return { source, workflowVersion, lastUpdatedAt }
+}
+
+function fmtPrice(value, digits = 2) {
+  const n = Number(value || 0)
+  if (!Number.isFinite(n) || n <= 0) return '-'
+  return n.toFixed(digits)
+}
+
+function positionModeText(mode) {
+  const m = String(mode || '').trim().toLowerCase()
+  if (m === 'contracts') return '按张数'
+  return '按保证金百分比'
+}
+
+function formatConfidence(value) {
+  const v = String(value || '').trim().toUpperCase()
+  if (v === 'HIGH') return '高'
+  if (v === 'MEDIUM') return '中'
+  if (v === 'LOW') return '低'
+  return v || '-'
+}
+
+function StrategyRuntimeTab({
+  currentStrategies = [],
+  strategyHistory = [],
+  strategyMetaMap = {},
+  nextOrderPreview = null,
+}) {
+  const rows = Array.isArray(strategyHistory) ? strategyHistory.slice(0, 20) : []
+  const currentList = Array.isArray(currentStrategies) ? currentStrategies : []
+  const [selectedHistoryID, setSelectedHistoryID] = useState('')
+  useEffect(() => {
+    const firstID = String(rows?.[0]?.id || '')
+    if (!rows.length) {
+      setSelectedHistoryID('')
+      return
+    }
+    const exists = rows.some((row) => String(row?.id || '') === String(selectedHistoryID || ''))
+    if (!exists) {
+      setSelectedHistoryID(firstID)
+    }
+  }, [rows, selectedHistoryID])
+  const selectedHistory = useMemo(
+    () => rows.find((row) => String(row?.id || '') === String(selectedHistoryID || '')) || rows[0] || null,
+    [rows, selectedHistoryID],
+  )
+  const selectedParams = selectedHistory?.params || {}
+  const preview = nextOrderPreview || {}
+  const previewSignal = String(preview?.signal || '-').toUpperCase() || '-'
+  const previewReason = String(preview?.reason || '').trim() || '-'
+  const previewStrategy = String(preview?.strategyCombo || '').trim() || '-'
+  const previewPrice = fmtPrice(preview?.price, 2)
+  const previewSL = fmtPrice(preview?.stopLoss, 2)
+  const previewTP = fmtPrice(preview?.takeProfit, 2)
+  const previewApproved = typeof preview?.approved === 'boolean' ? preview.approved : null
+  const previewExecuted = typeof preview?.executed === 'boolean' ? preview.executed : null
+  const previewApprovedText = previewApproved == null ? '-' : (previewApproved ? '可开仓' : '风控阻断')
+  const previewExecutedText = previewExecuted == null ? '-' : (previewExecuted ? '已执行' : '未执行')
+  const previewApprovedSize = fmtPrice(preview?.approvedSize, 4)
+  const previewSuggestedSize = fmtPrice(preview?.suggestedSize, 4)
+
+  return (
+    <div className="builder-pane">
+      <section className="sub-window strategy-runtime-window">
+        <h3>策略执行</h3>
+        <div className="strategy-runtime-current">
+          <span>正在执行策略</span>
+          {currentList.length ? (
+            <div className="strategy-runtime-current-list">
+              {currentList.map((name) => {
+                const meta = getStrategyMeta(name, strategyMetaMap)
+                return (
+                  <div key={`current-${name}`} className="strategy-runtime-item">
+                    <b title={String(name || '-')}>{String(name || '-')}</b>
+                    <p>
+                      来源：{meta.source} ｜ 工作流：{meta.workflowVersion} ｜ 最后升级：{formatBeijingDateTime(meta.lastUpdatedAt)}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <b>-</b>
+          )}
+        </div>
+        <div className="strategy-preview-card">
+          <h4>下一单开仓策略预览</h4>
+          <div className="strategy-preview-grid">
+            <p><span>方向</span><b>{previewSignal}</b></p>
+            <p><span>参考价格</span><b>{previewPrice}</b></p>
+            <p><span>止损价</span><b>{previewSL}</b></p>
+            <p><span>止盈价</span><b>{previewTP}</b></p>
+            <p><span>信心</span><b>{formatConfidence(preview?.confidence)}</b></p>
+            <p><span>策略组合</span><b>{previewStrategy}</b></p>
+            <p><span>开仓判定</span><b>{previewApprovedText}</b></p>
+            <p><span>执行状态</span><b>{previewExecutedText}</b></p>
+            <p><span>建议数量</span><b>{previewSuggestedSize}</b></p>
+            <p><span>风控后数量</span><b>{previewApprovedSize}</b></p>
+            <p className="full"><span>理由</span><b>{previewReason}</b></p>
+          </div>
+        </div>
+        <div className="strategy-runtime-history">
+          <h4>历史交易策略</h4>
+          <div className="strategy-history-mini">
+            {rows.length ? rows.map((row) => {
+              const ts = String(row?.ts || '').trim()
+              const timeText = formatBeijingClock(ts)
+              const list = Array.isArray(row?.strategies) ? row.strategies : []
+              const name = list.length ? list.join(' / ') : '-'
+              const firstMeta = list.length ? getStrategyMeta(list[0], strategyMetaMap, row) : null
+              const isActive = String(selectedHistoryID || '') === String(row?.id || '')
+              return (
+                <button
+                  type="button"
+                  className={`strategy-history-entry ${isActive ? 'active' : ''}`}
+                  key={String(row?.id || `${ts}-${name}`)}
+                  onClick={() => setSelectedHistoryID(String(row?.id || ''))}
+                >
+                  <p>
+                    <span>{timeText}</span>
+                    <b>{name}</b>
+                  </p>
+                  {firstMeta ? (
+                    <small>来源：{firstMeta.source} ｜ 工作流：{firstMeta.workflowVersion} ｜ 最后升级：{formatBeijingDateTime(firstMeta.lastUpdatedAt)}</small>
+                  ) : null}
+                </button>
+              )
+            }) : <p className="muted">暂无历史策略</p>}
+          </div>
+          {selectedHistory ? (
+            <div className="strategy-history-detail">
+              <h4>当时生效参数</h4>
+              <div className="strategy-history-param-grid">
+                <p><span>杠杆</span><b>{Number(selectedParams?.leverage || 0) > 0 ? `${selectedParams.leverage}x` : '-'}</b></p>
+                <p><span>仓位模式</span><b>{positionModeText(selectedParams?.positionSizingMode)}</b></p>
+                {String(selectedParams?.positionSizingMode || '').toLowerCase() === 'contracts' ? (
+                  <>
+                    <p><span>高信心张数</span><b>{fmtPrice(selectedParams?.highConfidenceAmount, 2)}</b></p>
+                    <p><span>低信心张数</span><b>{fmtPrice(selectedParams?.lowConfidenceAmount, 2)}</b></p>
+                  </>
+                ) : (
+                  <>
+                    <p><span>高信心保证金%</span><b>{fmtPrice(selectedParams?.highConfidenceMarginPct, 2)}%</b></p>
+                    <p><span>低信心保证金%</span><b>{fmtPrice(selectedParams?.lowConfidenceMarginPct, 2)}%</b></p>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  )
+}
 
 export function LivePageSection(p) {
   const {
@@ -25,16 +215,54 @@ export function LivePageSection(p) {
     refreshCore,
     runningNow,
     runOneCycle,
+    startLiveTrading,
+    startingLive,
     toggleScheduler,
     schedulerRunning,
     savingSettings,
     saveLiveConfig,
+    status,
     liveViewTab,
     setLiveViewTab,
     renderOverviewCards,
+    strategyMetaMap,
     liveStrategyLabel,
+    liveStrategyHistory,
+    liveMarketSnapshot,
     tradeRecords,
   } = p
+  const liveNextOrderPreview = useMemo(() => {
+    const runtime = status?.runtime || {}
+    const sig = runtime?.last_signal || {}
+    const priceData = runtime?.last_price || {}
+    const marketPrice = Number(liveMarketSnapshot?.price || 0)
+    const orderPreview = status?.next_order_preview || {}
+    const previewSignal = String(orderPreview?.signal || sig?.signal || '').trim().toUpperCase() || '-'
+    const previewConfidence = String(orderPreview?.confidence || sig?.confidence || '').trim().toUpperCase() || '-'
+    const previewStrategy = String((orderPreview?.strategy_combo ?? orderPreview?.strategyCombo ?? sig?.strategy_combo ?? sig?.strategyCombo) || '').trim() || '-'
+    const previewApproved = orderPreview?.approved
+    const previewExecuted = orderPreview?.executed
+    const previewApprovedSize = Number(orderPreview?.approved_size ?? orderPreview?.approvedSize ?? 0)
+    const previewSuggestedSize = Number(orderPreview?.suggested_size ?? orderPreview?.suggestedSize ?? 0)
+    const previewRiskReason = String((orderPreview?.risk_reason ?? orderPreview?.riskReason) || '').trim()
+    const previewReasonText = String(orderPreview?.reason || sig?.reason || '').trim()
+    const finalReason = previewRiskReason || previewReasonText || (previewSignal === 'HOLD' ? '信号不足，保持观望' : '')
+    return {
+      signal: previewSignal,
+      price: Number(orderPreview?.price || 0) > 0
+        ? Number(orderPreview?.price || 0)
+        : (marketPrice > 0 ? marketPrice : Number(priceData?.price || 0)),
+      stopLoss: Number(orderPreview?.stop_loss ?? orderPreview?.stopLoss ?? sig?.stop_loss ?? sig?.stopLoss ?? 0),
+      takeProfit: Number(orderPreview?.take_profit ?? orderPreview?.takeProfit ?? sig?.take_profit ?? sig?.takeProfit ?? 0),
+      confidence: previewConfidence,
+      reason: finalReason,
+      strategyCombo: previewStrategy,
+      approved: typeof previewApproved === 'boolean' ? previewApproved : null,
+      executed: typeof previewExecuted === 'boolean' ? previewExecuted : null,
+      approvedSize: Number.isFinite(previewApprovedSize) ? previewApprovedSize : 0,
+      suggestedSize: Number.isFinite(previewSuggestedSize) ? previewSuggestedSize : 0,
+    }
+  }, [status, liveMarketSnapshot])
 
   return (
     <section className="stack">
@@ -200,8 +428,8 @@ export function LivePageSection(p) {
             <ActionButton className="btn-flat btn-flat-cyan" loading={runningNow} onClick={runOneCycle}>
               {runningNow ? '执行中...' : '手动执行1次'}
             </ActionButton>
-            <ActionButton className="btn-flat btn-flat-emerald" onClick={() => toggleScheduler(true)} disabled={schedulerRunning}>
-              启动调度
+            <ActionButton className="btn-flat btn-flat-emerald" loading={startingLive} onClick={startLiveTrading}>
+              {startingLive ? '启动中...' : '开始'}
             </ActionButton>
             <ActionButton className="btn-flat btn-flat-rose" onClick={() => toggleScheduler(false)} disabled={!schedulerRunning}>
               停止
@@ -215,7 +443,6 @@ export function LivePageSection(p) {
             </ActionButton>
           </Space>
         </div>
-        <p className="muted">仅本地模拟与记录，不会调用交易所下单，也不会占用真实账户资金。</p>
       </section>
 
       <section className="card">
@@ -228,6 +455,18 @@ export function LivePageSection(p) {
               key: 'overview',
               label: '交易总览',
               children: renderOverviewCards(activePair, liveStrategyLabel),
+            },
+            {
+              key: 'strategy',
+              label: '策略执行',
+              children: (
+                <StrategyRuntimeTab
+                  currentStrategies={enabledStrategies}
+                  strategyHistory={liveStrategyHistory}
+                  strategyMetaMap={strategyMetaMap}
+                  nextOrderPreview={liveNextOrderPreview}
+                />
+              ),
             },
             {
               key: 'records',
@@ -273,10 +512,17 @@ export function PaperPageSection(p) {
     paperViewTab,
     setPaperViewTab,
     renderOverviewCards,
+    strategyMetaMap,
     paperTradeRecords,
+    paperLatestDecision,
+    paperStrategyHistory,
+    paperPnlBaselineMap,
+    resetPaperCurrentPnL,
   } = p
   const filteredPaperRecords = paperTradeRecords.filter((r) => !r.symbol || r.symbol === paperPair)
-  const paperTotalPnL = filteredPaperRecords.reduce((sum, row) => sum + Number(row?.unrealized_pnl || 0), 0)
+  const paperRawTotalPnL = filteredPaperRecords.reduce((sum, row) => sum + Number(row?.unrealized_pnl || 0), 0)
+  const paperPnlBaseline = Number(paperPnlBaselineMap?.[paperPair] || 0)
+  const paperTotalPnL = Number(paperRawTotalPnL - paperPnlBaseline)
   const paperWins = filteredPaperRecords.reduce((cnt, row) => cnt + (Number(row?.unrealized_pnl || 0) > 0 ? 1 : 0), 0)
   const paperLosses = filteredPaperRecords.reduce((cnt, row) => cnt + (Number(row?.unrealized_pnl || 0) < 0 ? 1 : 0), 0)
   const paperPnlRatio = paperLosses === 0 ? (paperWins > 0 ? '∞' : '0') : (paperWins / paperLosses).toFixed(2)
@@ -307,6 +553,31 @@ export function PaperPageSection(p) {
       side: lastSignal || '无',
     },
   }
+  const paperNextOrderPreview = useMemo(() => {
+    const latest = paperLatestDecision && typeof paperLatestDecision === 'object' ? paperLatestDecision : null
+    const src = latest || lastPaperRecord || {}
+    const signal = String(src?.signal || lastSignal || '').toUpperCase() || '-'
+    const confidence = String(src?.confidence || lastConfidence || '').toUpperCase() || '-'
+    const reason = String((src?.risk_reason ?? src?.riskReason ?? src?.reason) || '').trim()
+    const combo = String((src?.strategy_combo ?? src?.strategyCombo) || '').trim()
+    const approvedSize = Number(src?.approved_size ?? src?.approvedSize ?? 0)
+    const executedCode = String(src?.execution_code ?? src?.executionCode ?? '').trim().toLowerCase()
+    return {
+      signal,
+      price: Number(src?.price || 0),
+      stopLoss: Number(src?.stop_loss ?? src?.stopLoss ?? 0),
+      takeProfit: Number(src?.take_profit ?? src?.takeProfit ?? 0),
+      confidence,
+      reason: reason || '本地模拟规则（价格动量）',
+      strategyCombo: combo || paperSelectedStrategyText || '-',
+      approved: typeof src?.approved === 'boolean' ? src.approved : null,
+      executed: executedCode === ''
+        ? null
+        : (executedCode === 'paper_simulated' || executedCode === 'simulated'),
+      approvedSize: Number.isFinite(approvedSize) ? approvedSize : 0,
+      suggestedSize: Number.isFinite(approvedSize) ? approvedSize : 0,
+    }
+  }, [paperLatestDecision, lastPaperRecord, lastSignal, lastConfidence, paperSelectedStrategyText])
 
   return (
     <section className="stack">
@@ -486,6 +757,13 @@ export function PaperPageSection(p) {
             <ActionButton className="btn-flat btn-flat-amber" onClick={pausePaperSim} disabled={!paperSimRunning}>
               暂停模拟
             </ActionButton>
+            <ActionButton
+              className="btn-flat btn-flat-sky"
+              onClick={resetPaperCurrentPnL}
+              disabled={!filteredPaperRecords.length}
+            >
+              重置当前盈亏
+            </ActionButton>
           </Space>
         </div>
       </section>
@@ -509,6 +787,18 @@ export function PaperPageSection(p) {
                   strategyDurationText: paperStrategyDurationText,
                   pnlRatio: paperPnlRatio,
                 },
+              ),
+            },
+            {
+              key: 'strategy',
+              label: '策略执行',
+              children: (
+                <StrategyRuntimeTab
+                  currentStrategies={paperStrategySelection}
+                  strategyHistory={paperStrategyHistory}
+                  strategyMetaMap={strategyMetaMap}
+                  nextOrderPreview={paperNextOrderPreview}
+                />
               ),
             },
             {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ActionButton } from '@/components/ui/action-button'
 import { Tabs } from '@/components/ui/dashboard-primitives'
 import { MonthSelect } from '@/modules/month-select'
@@ -63,13 +62,6 @@ export function BuilderPageSection(p) {
     setGenAllowReversal,
     generateStrategy,
     generatingStrategy,
-    setUploadFile,
-    loadStrategyTemplate,
-    loadingTemplate,
-    copyStrategyTemplate,
-    uploadStrategy,
-    uploadingStrategy,
-    strategyTemplate,
     generatedStrategies,
     selectedRuleId,
     setSelectedRuleId,
@@ -176,36 +168,6 @@ export function BuilderPageSection(p) {
               </div>
             </section>
 
-            <section className="sub-window template-window">
-              <h4>模板策略脚本</h4>
-              <div className="form-grid">
-                <label>
-                  <span>上传 Python 策略脚本</span>
-                  <input
-                    type="file"
-                    accept=".py,text/x-python"
-                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                  />
-                </label>
-              </div>
-              <div className="actions-row">
-                <ActionButton className="btn-flat btn-flat-cyan" onClick={loadStrategyTemplate} loading={loadingTemplate}>
-                  {loadingTemplate ? '加载中...' : '加载模板策略脚本'}
-                </ActionButton>
-                <ActionButton className="btn-flat btn-flat-amber" onClick={copyStrategyTemplate}>复制模板</ActionButton>
-                <ActionButton className="btn-flat btn-flat-emerald" onClick={uploadStrategy} loading={uploadingStrategy}>
-                  {uploadingStrategy ? '上传中...' : '上传策略'}
-                </ActionButton>
-              </div>
-              <label>
-                <span>模板策略脚本（可复制后修改再上传）</span>
-                <textarea
-                  value={strategyTemplate}
-                  readOnly
-                  placeholder="点击“加载模板策略脚本”查看 sample_template.py"
-                />
-              </label>
-            </section>
           </div>
         )}
 
@@ -299,6 +261,7 @@ export function SkillWorkflowPageSection(p) {
     skillWorkflow,
     loadingSkillWorkflow,
     savingSkillWorkflow,
+    runningWorkflowUpgradeNow,
     aiWorkflowTab,
     setAiWorkflowTab,
     aiWorkflowLogs,
@@ -318,6 +281,7 @@ export function SkillWorkflowPageSection(p) {
     updateSkillPromptField,
     saveSkillWorkflowConfig,
     resetSkillWorkflowConfig,
+    runWorkflowUpgradeNow,
     loadSkillWorkflowConfig,
     loadAIWorkflowLogs,
     fmtNum,
@@ -358,6 +322,13 @@ export function SkillWorkflowPageSection(p) {
                     onClick={resetSkillWorkflowConfig}
                   >
                     {savingSkillWorkflow ? '处理中...' : '恢复默认'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-emerald"
+                    loading={runningWorkflowUpgradeNow}
+                    onClick={runWorkflowUpgradeNow}
+                  >
+                    {runningWorkflowUpgradeNow ? '升级中...' : '立刻升级策略'}
                   </ActionButton>
                   <ActionButton
                     className="btn-flat btn-flat-purple"

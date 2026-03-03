@@ -3,7 +3,6 @@ package server
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"trade-go/config"
 )
 
@@ -20,8 +18,7 @@ var editableEnvKeys = []string{
 	"AI_API_KEY",
 	"AI_BASE_URL",
 	"AI_MODEL",
-	"PY_STRATEGY_URL",
-	"PY_STRATEGY_ENABLED",
+	"AI_EXECUTION_STRATEGIES",
 	"BINANCE_API_KEY",
 	"BINANCE_SECRET",
 	"MODE",
@@ -60,6 +57,7 @@ func (s *Service) handleGetSystemSettings(w http.ResponseWriter, r *http.Request
 	// Keep .env in sync with front-end integration state before exposing runtime settings.
 	// This avoids startup race where system settings are read before integrations cleanup.
 	_, _ = readIntegrations()
+	sanitizeExecutionStrategiesEnv()
 
 	out := map[string]string{}
 	for _, k := range editableEnvKeys {
@@ -90,6 +88,9 @@ func (s *Service) handleSaveSystemSettings(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 		updates[k] = strings.TrimSpace(v)
+	}
+	if raw, ok := updates[executionStrategiesEnvKey]; ok {
+		updates[executionStrategiesEnvKey] = strings.Join(parseEnabledStrategiesEnv(raw), ",")
 	}
 	fieldErrors, warnings := validateSystemSettings(updates)
 	if len(fieldErrors) > 0 {
@@ -148,27 +149,6 @@ func validateSystemSettings(settings map[string]string) (map[string]string, map[
 		errs["AI_BASE_URL"] = "已填写 AI_API_KEY 时必须填写 AI_BASE_URL"
 	}
 
-	pyURL := get("PY_STRATEGY_URL")
-	if pyURL != "" {
-		u, err := url.Parse(pyURL)
-		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			errs["PY_STRATEGY_URL"] = "必须是合法的 http/https URL"
-		} else {
-			// 连通性告警，不阻断保存
-			check := strings.TrimRight(pyURL, "/") + "/health"
-			cli := &http.Client{Timeout: 2 * time.Second}
-			resp, reqErr := cli.Get(check)
-			if reqErr != nil {
-				warns["PY_STRATEGY_URL"] = "无法连通策略服务 /health（可稍后再试）"
-			} else {
-				_ = resp.Body.Close()
-				if resp.StatusCode >= 300 {
-					warns["PY_STRATEGY_URL"] = fmt.Sprintf("策略服务 /health 返回 HTTP %d", resp.StatusCode)
-				}
-			}
-		}
-	}
-
 	binKey := get("BINANCE_API_KEY")
 	binSecret := get("BINANCE_SECRET")
 	if (binKey == "") != (binSecret == "") {
@@ -181,8 +161,8 @@ func validateSystemSettings(settings map[string]string) (map[string]string, map[
 	}
 
 	mode := strings.ToLower(get("MODE"))
-	if mode != "" && mode != "prod" && mode != "test" && mode != "dev" && mode != "development" {
-		errs["MODE"] = "仅支持 prod / test / dev"
+	if mode != "" && mode != "prod" && mode != "test" && mode != "dev" && mode != "development" && mode != "web" && mode != "cli" {
+		errs["MODE"] = "仅支持 web / cli / prod / test / dev"
 	}
 
 	httpAddr := get("HTTP_ADDR")
@@ -338,6 +318,19 @@ func upsertDotEnv(path string, updates map[string]string) error {
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
+func sanitizeExecutionStrategiesEnv() {
+	raw := strings.TrimSpace(os.Getenv(executionStrategiesEnvKey))
+	if raw == "" {
+		return
+	}
+	cleaned := strings.Join(parseEnabledStrategiesEnv(raw), ",")
+	if cleaned == raw {
+		return
+	}
+	_ = upsertDotEnv(".env", map[string]string{executionStrategiesEnvKey: cleaned})
+	_ = os.Setenv(executionStrategiesEnvKey, cleaned)
+}
+
 func applyRuntimeConfigFromEnv() {
 	cfg := config.Config
 	if cfg == nil {
@@ -346,13 +339,13 @@ func applyRuntimeConfigFromEnv() {
 	cfg.AIAPIKey = os.Getenv("AI_API_KEY")
 	cfg.AIBaseURL = os.Getenv("AI_BASE_URL")
 	cfg.AIModel = os.Getenv("AI_MODEL")
-	cfg.PyStrategyURL = os.Getenv("PY_STRATEGY_URL")
 	cfg.ActiveExchange = os.Getenv("ACTIVE_EXCHANGE")
 	cfg.BinanceAPIKey = os.Getenv("BINANCE_API_KEY")
 	cfg.BinanceSecret = os.Getenv("BINANCE_SECRET")
 	cfg.OKXAPIKey = os.Getenv("OKX_API_KEY")
 	cfg.OKXSecret = os.Getenv("OKX_SECRET")
 	cfg.OKXPassword = os.Getenv("OKX_PASSWORD")
+	sanitizeExecutionStrategiesEnv()
 	if v := strings.TrimSpace(os.Getenv("TRADE_SYMBOL")); v != "" {
 		cfg.Trade.Symbol = strings.ToUpper(v)
 	}

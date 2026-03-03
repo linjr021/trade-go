@@ -62,10 +62,6 @@ func estimateTokens(text string) int64 {
 	return byWord
 }
 
-func recordLLMUsage(channel, prompt, completion string) {
-	recordLLMUsageWithMeta(channel, "", prompt, completion)
-}
-
 func recordLLMUsageWithMeta(channel, model, prompt, completion string) {
 	ch := strings.TrimSpace(channel)
 	if ch == "" {

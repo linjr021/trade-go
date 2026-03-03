@@ -1,7 +1,16 @@
-// @ts-nocheck
 import { Select } from '@/components/ui/dashboard-primitives'
 
-export function MonthSelect({ value, onChange, min = '2020-01', max = '2026-12' }) {
+export function MonthSelect({
+  value,
+  onChange,
+  min = '2020-01',
+  max = '2026-12',
+}: {
+  value?: string
+  onChange: (value: string) => void
+  min?: string
+  max?: string
+}) {
   const [minY, minM] = String(min).split('-').map((x) => Number(x))
   const [maxY, maxM] = String(max).split('-').map((x) => Number(x))
   const [curYRaw, curMRaw] = String(value || '').split('-')
@@ -10,14 +19,14 @@ export function MonthSelect({ value, onChange, min = '2020-01', max = '2026-12' 
   if (Number.isNaN(curY) || curY < minY) curY = minY
   if (Number.isNaN(curM) || curM < 1) curM = 1
 
-  const years = []
+  const years: number[] = []
   for (let y = minY; y <= maxY; y += 1) years.push(y)
   const startM = curY === minY ? minM : 1
   const endM = curY === maxY ? maxM : 12
   if (curM < startM) curM = startM
   if (curM > endM) curM = endM
 
-  const apply = (y, m) => onChange(`${y}-${String(m).padStart(2, '0')}`)
+  const apply = (y: number, m: number) => onChange(`${y}-${String(m).padStart(2, '0')}`)
 
   return (
     <div className="month-picker">

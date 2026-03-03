@@ -947,6 +947,207 @@ button:disabled {
   font-weight: 700;
 }
 
+.strategy-history-mini {
+  display: grid;
+  gap: 6px;
+}
+
+.strategy-history-mini p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.strategy-history-mini p span {
+  flex: 0 0 auto;
+  color: #607991;
+  font-weight: 600;
+}
+
+.strategy-history-mini p b {
+  display: block;
+  min-width: 0;
+  color: #1f3851;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-runtime-window {
+  display: grid;
+  gap: 10px;
+}
+
+.strategy-runtime-current {
+  border: 1px solid #dbe5ef;
+  border-radius: 10px;
+  background: #f4f8fd;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.strategy-runtime-current-list {
+  display: grid;
+  gap: 8px;
+}
+
+.strategy-runtime-item {
+  border: 1px solid #d8e3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.strategy-runtime-current span {
+  font-size: 12px;
+  color: #607991;
+}
+
+.strategy-runtime-current b,
+.strategy-runtime-item b {
+  font-size: 14px;
+  color: #1f3851;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-runtime-item p {
+  margin: 0;
+  font-size: 12px;
+  color: #607991;
+}
+
+.strategy-runtime-history h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #526a80;
+}
+
+.strategy-preview-card {
+  border: 1px solid #dbe5ef;
+  border-radius: 10px;
+  background: #f4f8fd;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.strategy-preview-card h4 {
+  margin: 0;
+  font-size: 13px;
+  color: #526a80;
+}
+
+.strategy-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.strategy-preview-grid p {
+  margin: 0;
+  border: 1px solid #dbe5ef;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.strategy-preview-grid p.full {
+  grid-column: 1 / -1;
+}
+
+.strategy-preview-grid p span {
+  font-size: 12px;
+  color: #607991;
+}
+
+.strategy-preview-grid p b {
+  font-size: 13px;
+  color: #1f3851;
+  word-break: break-word;
+}
+
+.strategy-history-entry {
+  border: 1px solid #dbe5ef;
+  border-radius: 8px;
+  background: #f4f8fd;
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.strategy-history-entry.active {
+  border-color: #7ea5d8;
+  background: #eaf3ff;
+}
+
+.strategy-history-entry:hover {
+  border-color: #9db8d8;
+  background: #eef5ff;
+}
+
+.strategy-history-entry small {
+  display: block;
+  margin: 0 2px;
+  font-size: 11px;
+  color: #607991;
+}
+
+.strategy-history-detail {
+  margin-top: 8px;
+  border: 1px solid #dbe5ef;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.strategy-history-detail h4 {
+  margin: 0;
+  font-size: 13px;
+  color: #526a80;
+}
+
+.strategy-history-param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.strategy-history-param-grid p {
+  margin: 0;
+  border: 1px solid #dbe5ef;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.strategy-history-param-grid p span {
+  font-size: 12px;
+  color: #607991;
+}
+
+.strategy-history-param-grid p b {
+  font-size: 13px;
+  color: #1f3851;
+}
+
 .up {
   color: #0f996e;
 }
@@ -2342,7 +2543,7 @@ button:disabled {
 
 .bt-order-detail-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
 }
 
@@ -2773,6 +2974,109 @@ td {
 
 [data-theme='dark'] .metric-card h4 {
   color: #c1d3e6;
+}
+
+[data-theme='dark'] .strategy-history-mini p {
+  background: transparent;
+  border-color: transparent;
+}
+
+[data-theme='dark'] .strategy-history-mini p span {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-history-mini p b {
+  color: #e4edf8;
+}
+
+[data-theme='dark'] .strategy-runtime-current {
+  background: #223647;
+  border-color: #3c556d;
+}
+
+[data-theme='dark'] .strategy-preview-card {
+  background: #223647;
+  border-color: #3c556d;
+}
+
+[data-theme='dark'] .strategy-preview-card h4 {
+  color: #c1d3e6;
+}
+
+[data-theme='dark'] .strategy-preview-grid p {
+  background: #1f3243;
+  border-color: #3a5269;
+}
+
+[data-theme='dark'] .strategy-preview-grid p span {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-preview-grid p b {
+  color: #e4edf8;
+}
+
+[data-theme='dark'] .strategy-runtime-item {
+  background: #1f3243;
+  border-color: #3a5269;
+}
+
+[data-theme='dark'] .strategy-runtime-current span {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-runtime-current b,
+[data-theme='dark'] .strategy-runtime-item b {
+  color: #e4edf8;
+}
+
+[data-theme='dark'] .strategy-runtime-item p {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-runtime-history h4 {
+  color: #c1d3e6;
+}
+
+[data-theme='dark'] .strategy-history-entry {
+  background: #223647;
+  border-color: #3c556d;
+}
+
+[data-theme='dark'] .strategy-history-entry.active {
+  background: #2a4361;
+  border-color: #6e99cf;
+}
+
+[data-theme='dark'] .strategy-history-entry:hover {
+  background: #2a4361;
+  border-color: #6e99cf;
+}
+
+[data-theme='dark'] .strategy-history-entry small {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-history-detail {
+  background: #223647;
+  border-color: #3c556d;
+}
+
+[data-theme='dark'] .strategy-history-detail h4 {
+  color: #c1d3e6;
+}
+
+[data-theme='dark'] .strategy-history-param-grid p {
+  background: #1f3243;
+  border-color: #3a5269;
+}
+
+[data-theme='dark'] .strategy-history-param-grid p span {
+  color: #b9ccdf;
+}
+
+[data-theme='dark'] .strategy-history-param-grid p b {
+  color: #e4edf8;
 }
 
 [data-theme='dark'] .centered-list-table {
@@ -3950,6 +4254,8 @@ th {
   .form-grid.backtest-grid,
   .overview-grid,
   .summary-grid,
+  .strategy-preview-grid,
+  .strategy-history-param-grid,
   .bt-order-detail-grid,
   .env-grid,
   .asset-layout,

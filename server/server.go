@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"trade-go/ai"
 	"trade-go/config"
 	"trade-go/trader"
 )
@@ -22,6 +23,8 @@ type Service struct {
 	mu    sync.RWMutex
 
 	schedulerRunning            bool
+	realtimeLoopRunning         bool
+	triggerMode                 string
 	nextRunAt                   time.Time
 	cancelScheduler             context.CancelFunc
 	startedAt                   time.Time
@@ -33,9 +36,11 @@ type Service struct {
 
 func NewService(bot *trader.Bot) *Service {
 	applySkillWorkflowPromptsToEnv(loadSkillWorkflowConfig())
+	ai.SetUsageRecorder(recordLLMUsageWithMeta)
 	return &Service{
 		bot:                         bot,
 		startedAt:                   time.Now(),
+		triggerMode:                 "idle",
 		lastAutoStrategyRegenReason: "等待自动重生成触发",
 	}
 }
@@ -48,11 +53,10 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/assets/pnl-calendar", s.handleAssetPnLCalendar)
 	mux.HandleFunc("/api/assets/distribution", s.handleAssetDistribution)
 	mux.HandleFunc("/api/signals", s.handleSignals)
+	mux.HandleFunc("/api/market/snapshot", s.handleMarketSnapshot)
 	mux.HandleFunc("/api/trade-records", s.handleTradeRecords)
 	mux.HandleFunc("/api/strategy-scores", s.handleStrategyScores)
 	mux.HandleFunc("/api/strategies", s.handleStrategies)
-	mux.HandleFunc("/api/strategies/template", s.handleStrategyTemplate)
-	mux.HandleFunc("/api/strategies/upload", s.handleStrategyUpload)
 	mux.HandleFunc("/api/strategy-preference/generate", s.handleGenerateStrategyPreference)
 	mux.HandleFunc("/api/generated-strategies", s.handleGeneratedStrategies)
 	mux.HandleFunc("/api/skill-workflow", s.handleSkillWorkflow)
@@ -77,10 +81,12 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/runtime", s.handleSystemRuntimeStatus)
 	mux.HandleFunc("/api/system/restart", s.handleSystemSoftRestart)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
+	mux.HandleFunc("/api/auto-strategy/regen-now", s.handleAutoStrategyRegenNow)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/run", s.handleRunNow)
 	mux.HandleFunc("/api/scheduler/start", s.handleStartScheduler)
 	mux.HandleFunc("/api/scheduler/stop", s.handleStopScheduler)
+	mux.HandleFunc("/api/paper/simulate-step", s.handlePaperSimulateStep)
 }
 
 func (s *Service) StartScheduler() {
@@ -92,6 +98,8 @@ func (s *Service) StartScheduler() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelScheduler = cancel
 	s.schedulerRunning = true
+	s.realtimeLoopRunning = false
+	s.triggerMode = "scheduler"
 	s.mu.Unlock()
 
 	go s.loop(ctx)
@@ -105,6 +113,20 @@ func (s *Service) StopScheduler() {
 	}
 	s.schedulerRunning = false
 	s.nextRunAt = time.Time{}
+	if !s.realtimeLoopRunning {
+		s.triggerMode = "idle"
+	}
+}
+
+func (s *Service) SetRealtimeLoopRunning(running bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.realtimeLoopRunning = running
+	if running {
+		s.triggerMode = "realtime"
+	} else if !s.schedulerRunning {
+		s.triggerMode = "idle"
+	}
 }
 
 func (s *Service) loop(ctx context.Context) {
@@ -151,19 +173,34 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := s.bot.Snapshot()
 	cfg := s.bot.TradeConfig()
+	enabledStrategies := parseEnabledStrategiesEnv("")
+	activeStrategy := ""
+	if len(enabledStrategies) > 0 {
+		activeStrategy = enabledStrategies[0]
+	}
+	enabledStrategyDetails := buildEnabledStrategyDetails(enabledStrategies)
+	nextOrderPreview, hasOrderPreview := s.bot.LatestAIDecisionPreview()
 
 	s.mu.RLock()
 	resp := map[string]any{
-		"trade_config":      tradeConfigMap(cfg),
-		"scheduler_running": s.schedulerRunning,
-		"next_run_at":       s.nextRunAt,
-		"runtime":           snap,
-		"strategy_scores":   s.bot.StrategyComboScores(20),
+		"trade_config":             tradeConfigMap(cfg),
+		"enabled_strategies":       enabledStrategies,
+		"enabled_strategy_details": enabledStrategyDetails,
+		"active_strategy":          activeStrategy,
+		"scheduler_running":        s.schedulerRunning,
+		"realtime_running":         s.realtimeLoopRunning,
+		"trigger_mode":             s.triggerMode,
+		"next_run_at":              s.nextRunAt,
+		"runtime":                  snap,
+		"strategy_scores":          s.bot.StrategyComboScores(20),
 		"auto_strategy_regen": map[string]any{
 			"last_at":     s.lastAutoStrategyRegenAt,
 			"next_at":     s.nextAutoStrategyRegenAt,
 			"last_reason": s.lastAutoStrategyRegenReason,
 		},
+	}
+	if hasOrderPreview {
+		resp["next_order_preview"] = nextOrderPreview
 	}
 	s.mu.RUnlock()
 	writeJSON(w, http.StatusOK, resp)
@@ -176,6 +213,7 @@ func (s *Service) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	balance, balanceErr := s.bot.FetchBalance()
+	availableBalance, availableErr := s.bot.FetchAvailableBalance()
 	position, posErr := s.bot.FetchPosition()
 	cfg := s.bot.TradeConfig()
 	activeExchange := s.bot.ActiveExchange()
@@ -185,17 +223,21 @@ func (s *Service) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"balance":         balance,
-		"position":        position,
-		"symbol":          cfg.Symbol,
-		"position_symbol": positionSymbol,
-		"active_exchange": activeExchange,
+		"balance":           balance,
+		"available_balance": availableBalance,
+		"position":          position,
+		"symbol":            cfg.Symbol,
+		"position_symbol":   positionSymbol,
+		"active_exchange":   activeExchange,
 	}
 	if balanceErr != nil {
 		resp["balance_error"] = balanceErr.Error()
 	}
 	if posErr != nil {
 		resp["position_error"] = posErr.Error()
+	}
+	if availableErr != nil {
+		resp["available_balance_error"] = availableErr.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -253,9 +295,19 @@ func (s *Service) handleAssetOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary, ok := s.bot.EquitySummary()
+	totalFunds, totalErr := s.bot.FetchBalance()
+	availableFunds, availErr := s.bot.FetchAvailableBalance()
 	if !ok {
-		balance, _ := s.bot.FetchBalance()
-		summary.TotalFunds = balance
+		summary.TotalFunds = totalFunds
+	}
+	if totalErr == nil && totalFunds > 0 {
+		summary.TotalFunds = totalFunds
+	}
+	if availErr == nil && availableFunds >= 0 {
+		summary.AvailableFunds = availableFunds
+	}
+	if (availErr != nil || math.IsNaN(summary.AvailableFunds) || math.IsInf(summary.AvailableFunds, 0) || summary.AvailableFunds < 0) && summary.TotalFunds > 0 {
+		summary.AvailableFunds = summary.TotalFunds
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"overview":        summary,
@@ -323,11 +375,29 @@ func (s *Service) handleAssetDistribution(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cfg := s.bot.TradeConfig()
-	balance, _ := s.bot.FetchBalance()
+	totalFunds, _ := s.bot.FetchBalance()
+	availableFunds, availErr := s.bot.FetchAvailableBalance()
 	pos, _ := s.bot.FetchPosition()
-	hold := 0.0
-	label := "持仓保证金"
-	if pos != nil && pos.EntryPrice > 0 {
+	cash := availableFunds
+	if availErr != nil || math.IsNaN(cash) || math.IsInf(cash, 0) {
+		cash = totalFunds
+	}
+	if cash < 0 {
+		cash = 0
+	}
+	total := totalFunds
+	if total < 0 {
+		total = 0
+	}
+	if total == 0 {
+		total = cash
+	}
+	if cash > total {
+		cash = total
+	}
+	hold := total - cash
+	label := "已占用保证金"
+	if hold <= 0 && pos != nil && pos.EntryPrice > 0 {
 		lev := pos.Leverage
 		if lev <= 0 {
 			lev = float64(cfg.Leverage)
@@ -336,18 +406,16 @@ func (s *Service) handleAssetDistribution(w http.ResponseWriter, r *http.Request
 			lev = 1
 		}
 		hold = math.Abs(pos.Size*pos.EntryPrice) / lev
+		if hold < 0 {
+			hold = 0
+		}
 		if pos.Symbol != "" {
 			label = pos.Symbol + " 持仓保证金"
 		}
+		if total < cash+hold {
+			total = cash + hold
+		}
 	}
-	if hold < 0 {
-		hold = 0
-	}
-	cash := balance
-	if cash < 0 {
-		cash = 0
-	}
-	total := cash + hold
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total":           total,
 		"active_exchange": s.bot.ActiveExchange(),
@@ -504,6 +572,54 @@ func (s *Service) handleStopScheduler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.StopScheduler()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "scheduler stopped"})
+}
+
+func buildEnabledStrategyDetails(enabled []string) []map[string]any {
+	if len(enabled) == 0 {
+		return []map[string]any{}
+	}
+	store := readGeneratedStrategies()
+	byName := map[string]generatedStrategyRecord{}
+	for _, item := range store.Strategies {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		byName[strings.ToLower(name)] = item
+	}
+	out := make([]map[string]any, 0, len(enabled))
+	for _, raw := range enabled {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		source := "manual_external"
+		workflowVersion := ""
+		workflowChain := []string{}
+		lastUpdatedAt := ""
+		if item, ok := byName[key]; ok {
+			if s := strings.TrimSpace(item.Source); s != "" {
+				source = s
+			} else {
+				source = "workflow_generated"
+			}
+			workflowVersion = strings.TrimSpace(item.WorkflowVersion)
+			workflowChain = append([]string{}, item.WorkflowChain...)
+			lastUpdatedAt = strings.TrimSpace(item.LastUpdatedAt)
+			if lastUpdatedAt == "" {
+				lastUpdatedAt = strings.TrimSpace(item.CreatedAt)
+			}
+		}
+		out = append(out, map[string]any{
+			"name":             name,
+			"source":           source,
+			"workflow_version": workflowVersion,
+			"workflow_chain":   workflowChain,
+			"last_updated_at":  lastUpdatedAt,
+		})
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

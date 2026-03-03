@@ -1,10 +1,8 @@
-// @ts-nocheck
 import { fmtNum } from '@/modules/format'
 import { BinanceAdvancedChart } from '@/modules/charts'
 
 export function OverviewCardsPanel({
   pair,
-  strategyName,
   marketEmotion,
   totalPnL,
   account,
@@ -23,7 +21,6 @@ export function OverviewCardsPanel({
         <article className="metric-card"><h4>账户信息</h4><p>余额 {fmtNum(account?.balance, 2)} / 持仓 {account?.position?.side || '无'}</p></article>
         <article className="metric-card"><h4>当前策略交易时长</h4><p>{strategyDurationText}</p></article>
         <article className="metric-card"><h4>盈亏比</h4><p>{pnlRatio}</p></article>
-        <article className="metric-card"><h4>当前策略</h4><p>{strategyName || '-'}</p></article>
       </div>
       {extra}
       <section className="sub-window kline-card">

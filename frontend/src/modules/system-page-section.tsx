@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ActionButton } from '@/components/ui/action-button'
 import { Space, Tabs } from '@/components/ui/dashboard-primitives'
 
@@ -22,7 +21,6 @@ export function SystemPageSection(p) {
     saveSystemEnv,
     setEditingLLMId,
     resetLLMModalDraft,
-    setNewLLM,
     setShowLLMModal,
     llmProductCatalog,
     llmConfigs,
@@ -41,6 +39,7 @@ export function SystemPageSection(p) {
     deletingExchangeId,
     removeExchangeAccount,
   } = p
+  const tokenUsageByChannel = (systemRuntime?.integration?.agent?.token_usage?.by_channel || {}) as Record<string, any>
 
   return (
     <section className="stack">
@@ -161,7 +160,7 @@ export function SystemPageSection(p) {
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.entries(systemRuntime?.integration?.agent?.token_usage?.by_channel || {}).map(([k, v]) => (
+                    {Object.entries(tokenUsageByChannel).map(([k, v]) => (
                       <tr key={`token-${k}`}>
                         <td>{k}</td>
                         <td>{v?.requests ?? 0}</td>
@@ -171,8 +170,8 @@ export function SystemPageSection(p) {
                         <td>{fmtTime(v?.last_used_at)}</td>
                       </tr>
                     ))}
-                    {!Object.keys(systemRuntime?.integration?.agent?.token_usage?.by_channel || {}).length ? (
-                      <tr><td colSpan="6" className="muted">暂无 token 使用数据</td></tr>
+                    {!Object.keys(tokenUsageByChannel).length ? (
+                      <tr><td colSpan={6} className="muted">暂无 token 使用数据</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -292,7 +291,7 @@ export function SystemPageSection(p) {
                       )
                     })}
                     {!llmConfigs.length ? (
-                      <tr><td colSpan="6" className="muted">暂无智能体参数</td></tr>
+                      <tr><td colSpan={6} className="muted">暂无智能体参数</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -354,7 +353,7 @@ export function SystemPageSection(p) {
                     </tr>
                   ))}
                   {!exchangeConfigs.length ? (
-                    <tr><td colSpan="5" className="muted">暂无交易所参数</td></tr>
+                    <tr><td colSpan={5} className="muted">暂无交易所参数</td></tr>
                   ) : null}
                 </tbody>
               </table>

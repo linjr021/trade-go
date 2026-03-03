@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ActionButton } from '@/components/ui/action-button'
 import { Modal } from '@/components/ui/dashboard-primitives'
 

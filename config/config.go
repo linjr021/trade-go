@@ -49,7 +49,6 @@ type AppConfig struct {
 	AIAPIKey       string
 	AIBaseURL      string
 	AIModel        string
-	PyStrategyURL  string
 	ActiveExchange string
 	BinanceAPIKey  string
 	BinanceSecret  string
@@ -70,7 +69,6 @@ func Load() {
 		AIAPIKey:       getEnv("AI_API_KEY", ""),
 		AIBaseURL:      getEnv("AI_BASE_URL", ""),
 		AIModel:        getEnv("AI_MODEL", ""),
-		PyStrategyURL:  getEnv("PY_STRATEGY_URL", ""),
 		ActiveExchange: getEnv("ACTIVE_EXCHANGE", "binance"),
 		BinanceAPIKey:  getEnv("BINANCE_API_KEY", ""),
 		BinanceSecret:  getEnv("BINANCE_SECRET", ""),

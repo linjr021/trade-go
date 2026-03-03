@@ -55,6 +55,25 @@ type TradeRecord struct {
 	UnrealizedPnL float64 `json:"unrealized_pnl"`
 }
 
+type AIDecisionPreview struct {
+	ID            int64   `json:"id"`
+	Ts            string  `json:"ts"`
+	Exchange      string  `json:"exchange"`
+	Signal        string  `json:"signal"`
+	Confidence    string  `json:"confidence"`
+	Reason        string  `json:"reason"`
+	Price         float64 `json:"price"`
+	StopLoss      float64 `json:"stop_loss"`
+	TakeProfit    float64 `json:"take_profit"`
+	SuggestedSize float64 `json:"suggested_size"`
+	ApprovedSize  float64 `json:"approved_size"`
+	Approved      bool    `json:"approved"`
+	Executed      bool    `json:"executed"`
+	RiskReason    string  `json:"risk_reason"`
+	StrategyCombo string  `json:"strategy_combo"`
+	StrategyScore float64 `json:"strategy_score"`
+}
+
 type EquityPoint struct {
 	Ts     string  `json:"ts"`
 	Equity float64 `json:"equity"`
@@ -62,6 +81,7 @@ type EquityPoint struct {
 
 type EquitySummary struct {
 	TotalFunds       float64 `json:"total_funds"`
+	AvailableFunds   float64 `json:"available_funds"`
 	TodayPnLAmount   float64 `json:"today_pnl_amount"`
 	TodayPnLPct      float64 `json:"today_pnl_pct"`
 	CumulativePnL    float64 `json:"cumulative_pnl"`
@@ -704,6 +724,67 @@ func (s *Store) RecentTradeRecords(limit int) ([]TradeRecord, error) {
 	return out, nil
 }
 
+func (s *Store) LatestAIDecisionPreview() (AIDecisionPreview, bool, error) {
+	if s == nil {
+		return AIDecisionPreview{}, false, nil
+	}
+	ex := currentExchange()
+	row := s.db.QueryRow(
+		`SELECT
+			id, ts, exchange, signal, confidence, reason, price, stop_loss, take_profit,
+			suggested_size, approved_size, approved, executed, risk_reason, strategy_combo, strategy_score
+		FROM ai_decisions
+		WHERE exchange=?
+		ORDER BY id DESC
+		LIMIT 1`,
+		ex,
+	)
+
+	var (
+		item                                              AIDecisionPreview
+		exchange, signal, confidence, reason, risk, combo sql.NullString
+		price, sl, tp, suggested, approvedSize, score     sql.NullFloat64
+		approved, executed                                sql.NullInt64
+	)
+	if err := row.Scan(
+		&item.ID, &item.Ts, &exchange, &signal, &confidence, &reason,
+		&price, &sl, &tp, &suggested, &approvedSize, &approved, &executed,
+		&risk, &combo, &score,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return AIDecisionPreview{}, false, nil
+		}
+		return AIDecisionPreview{}, false, err
+	}
+	item.Exchange = exchange.String
+	item.Signal = signal.String
+	item.Confidence = confidence.String
+	item.Reason = reason.String
+	item.RiskReason = risk.String
+	item.StrategyCombo = combo.String
+	if price.Valid {
+		item.Price = price.Float64
+	}
+	if sl.Valid {
+		item.StopLoss = sl.Float64
+	}
+	if tp.Valid {
+		item.TakeProfit = tp.Float64
+	}
+	if suggested.Valid {
+		item.SuggestedSize = suggested.Float64
+	}
+	if approvedSize.Valid {
+		item.ApprovedSize = approvedSize.Float64
+	}
+	item.Approved = approved.Valid && approved.Int64 == 1
+	item.Executed = executed.Valid && executed.Int64 == 1
+	if score.Valid {
+		item.StrategyScore = score.Float64
+	}
+	return item, true, nil
+}
+
 func (s *Store) EquitySummary() (EquitySummary, error) {
 	if s == nil {
 		return EquitySummary{}, nil
@@ -766,6 +847,9 @@ func (s *Store) EquitySummary() (EquitySummary, error) {
 	}
 	if out.TotalFunds == 0 && lastBalance > 0 {
 		out.TotalFunds = lastBalance
+	}
+	if out.AvailableFunds == 0 && lastBalance > 0 {
+		out.AvailableFunds = lastBalance
 	}
 	return out, nil
 }

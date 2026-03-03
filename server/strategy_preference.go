@@ -67,11 +67,52 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 	profile := habitProfileOf(habit)
 	f := profile.Timeframe
 	tradeCfg := s.bot.TradeConfig()
+	workflowCfg := loadSkillWorkflowConfig()
+	workflowVersion := strings.TrimSpace(workflowCfg.Version)
+	if workflowVersion == "" {
+		workflowVersion = "skill-workflow/v1"
+	}
+	workflowChain := enabledSkillWorkflowSteps(workflowCfg)
+	activateGenerated := func(gen generatedPreference, source string) (generatedPreference, generatedStrategyRecord, []string, generatedStrategyStore, error) {
+		gen.StrategyName = buildStandardStrategyName(symbol, habit, style, false)
+		record := generatedStrategyRecord{
+			ID:               newGeneratedStrategyID("workflow"),
+			Name:             strings.TrimSpace(gen.StrategyName),
+			RuleKey:          buildStrategyRuleKey(symbol, habit, style, false),
+			PreferencePrompt: strings.TrimSpace(gen.PreferencePrompt),
+			GeneratorPrompt:  strings.TrimSpace(gen.GeneratorPrompt),
+			Logic:            strings.TrimSpace(gen.Logic),
+			Basis:            strings.TrimSpace(gen.Basis),
+			CreatedAt:        time.Now().Format(time.RFC3339),
+			LastUpdatedAt:    time.Now().Format(time.RFC3339),
+			Source:           normalizeStrategySource(source),
+			WorkflowVersion:  workflowVersion,
+			WorkflowChain:    workflowChain,
+		}
+		if record.Source == "" {
+			record.Source = "workflow_generated"
+		}
+		final, enabled, store, err := s.saveAndActivateGeneratedStrategy(record)
+		if err != nil {
+			return generatedPreference{}, generatedStrategyRecord{}, nil, generatedStrategyStore{}, err
+		}
+		gen.StrategyName = final.Name
+		gen.PreferencePrompt = final.PreferencePrompt
+		gen.GeneratorPrompt = final.GeneratorPrompt
+		gen.Logic = final.Logic
+		gen.Basis = final.Basis
+		return gen, final, enabled, store, nil
+	}
 
 	client := exchange.NewClient()
 	candles, err := client.FetchOHLCV(symbol, f, 120)
 	if err != nil || len(candles) < 30 {
 		fb := fallbackGeneratedPreference(symbol, habit, f, style, minRR, req.AllowReversal, lowConfAction, directionBias, "行情抓取失败，回退模板生成", tradeCfg)
+		finalGenerated, stored, enabled, store, activateErr := activateGenerated(fb, "workflow_generated")
+		if activateErr != nil {
+			writeError(w, http.StatusInternalServerError, "策略生成成功但激活失败: "+activateErr.Error())
+			return
+		}
 		skillPkg := buildStrategySkillPackage(
 			symbol,
 			habit,
@@ -88,9 +129,14 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 			},
 		)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"generated":     fb,
-			"fallback":      true,
-			"skill_package": skillPkg,
+			"generated":            finalGenerated,
+			"fallback":             true,
+			"skill_package":        skillPkg,
+			"auto_activated":       true,
+			"active_strategy":      stored.Name,
+			"enabled_strategies":   enabled,
+			"generated_strategy":   stored,
+			"generated_strategies": store.Strategies,
 			"market": map[string]any{
 				"symbol":        symbol,
 				"timeframe":     f,
@@ -138,10 +184,20 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 		symbol, habit, f, cur.Close, change, trend.Overall, ind, levels,
 		style, minRR, req.AllowReversal, lowConfAction, directionBias, tradeCfg,
 	)
+	finalGenerated, stored, enabled, store, activateErr := activateGenerated(gen, "workflow_generated")
+	if activateErr != nil {
+		writeError(w, http.StatusInternalServerError, "策略生成成功但激活失败: "+activateErr.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"generated":     gen,
-		"fallback":      usedFallback,
-		"skill_package": skillPkg,
+		"generated":            finalGenerated,
+		"fallback":             usedFallback,
+		"skill_package":        skillPkg,
+		"auto_activated":       true,
+		"active_strategy":      stored.Name,
+		"enabled_strategies":   enabled,
+		"generated_strategy":   stored,
+		"generated_strategies": store.Strategies,
 		"market": map[string]any{
 			"symbol":           symbol,
 			"timeframe":        f,
@@ -174,10 +230,6 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 			},
 		},
 	})
-}
-
-func timeframeByHabit(h string) string {
-	return habitProfileOf(h).Timeframe
 }
 
 func generatePreferenceByLLM(
@@ -322,12 +374,13 @@ func generatePreferenceByLLM(
 	out.GeneratorPrompt = strings.TrimSpace(out.GeneratorPrompt)
 	out.Logic = strings.TrimSpace(out.Logic)
 	out.Basis = strings.TrimSpace(out.Basis)
-	if out.StrategyName == "" || out.PreferencePrompt == "" || out.GeneratorPrompt == "" {
+	if out.PreferencePrompt == "" || out.GeneratorPrompt == "" {
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI内容不完整，回退模板生成", tradeCfg), true
 	}
 	if !strings.Contains(out.GeneratorPrompt, "${symbol}") || !strings.Contains(out.GeneratorPrompt, "${habit}") {
 		out.GeneratorPrompt = ensureGeneratorVars(out.GeneratorPrompt)
 	}
+	out.StrategyName = buildStandardStrategyName(symbol, habit, style, false)
 	return out, false
 }
 
@@ -338,7 +391,7 @@ func fallbackGeneratedPreference(
 	lowConfAction, directionBias, reason string,
 	tradeCfg config.TradeConfig,
 ) generatedPreference {
-	strategyName := fmt.Sprintf("AI_%s_%s_%s", symbol, habit, time.Now().Format("20060102"))
+	strategyName := buildStandardStrategyName(symbol, habit, style, false)
 	execDesc := fmt.Sprintf(
 		"执行参数以实盘设置为准：mode=%s, high_amount=%.6f, low_amount=%.6f, high_margin=%.2f%%, low_margin=%.2f%%, leverage=%d。",
 		tradeCfg.PositionSizingMode,

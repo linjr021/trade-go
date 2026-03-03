@@ -184,6 +184,64 @@ func (b *Bot) Run() {
 	// 2.5) auto-review (按配置在下单后间隔触发，自动收紧/恢复风险参数)
 	b.maybeAutoReview(cycleID, priceData)
 
+	// 2.6) global risk precheck
+	// 如果已触发全局止停（如最大回撤/日亏损等），直接短路为HOLD，避免无效AI调用与token消耗。
+	riskPrecheckAt := time.Now()
+	riskSnapshot, riskSnapshotErr := b.loadRiskSnapshot()
+	if riskSnapshotErr != nil {
+		reason := riskSnapshotErr.Error()
+		holdSig := models.TradeSignal{
+			Signal:        "HOLD",
+			Reason:        "风控预检失败: " + reason,
+			StopLoss:      0,
+			TakeProfit:    0,
+			Confidence:    "LOW",
+			StrategyCombo: "risk_guard_hold",
+			Timestamp:     time.Now(),
+		}
+		b.saveSkillStepAudit(cycleID, "risk-plan", "failed", "balance_unavailable", "", riskPrecheckAt,
+			map[string]any{
+				"price":    priceData.Price,
+				"position": currentPos,
+			},
+			map[string]any{
+				"approved": false,
+				"reason":   reason,
+			},
+			"blocked")
+		b.saveAIDecision(holdSig, priceData, 0, false, reason, false)
+		_ = b.saveRiskEvent("risk_block", reason)
+		b.setRuntime(time.Now(), reason, &holdSig, &priceData, currentPos)
+		return
+	}
+	if stop, stopReason := b.riskEngine.EvaluateGlobalStop(riskSnapshot); stop {
+		holdSig := models.TradeSignal{
+			Signal:        "HOLD",
+			Reason:        "全局风控止停: " + stopReason,
+			StopLoss:      0,
+			TakeProfit:    0,
+			Confidence:    "LOW",
+			StrategyCombo: "risk_guard_hold",
+			Timestamp:     time.Now(),
+		}
+		b.addSignal(holdSig)
+		b.saveSkillStepAudit(cycleID, "risk-plan", "failed", "global_stop_active", "", riskPrecheckAt,
+			map[string]any{
+				"price":    priceData.Price,
+				"position": currentPos,
+				"snapshot": riskSnapshot,
+			},
+			map[string]any{
+				"approved": false,
+				"reason":   stopReason,
+			},
+			"blocked")
+		b.saveAIDecision(holdSig, priceData, 0, false, stopReason, false)
+		_ = b.saveRiskEvent("risk_block", stopReason)
+		b.setRuntime(time.Now(), stopReason, &holdSig, &priceData, currentPos)
+		return
+	}
+
 	// 2) strategy-select
 	strategySelectAt := time.Now()
 	signal := b.analyzeWithRetry(priceData, currentPos)
@@ -355,6 +413,7 @@ func (b *Bot) fetchPriceData() (models.PriceData, error) {
 	priceChange := (cur.Close - prev.Close) / prev.Close * 100
 
 	return models.PriceData{
+		Symbol:      cfg.Symbol,
 		Price:       cur.Close,
 		Timestamp:   cur.Timestamp,
 		High:        cur.High,
@@ -565,6 +624,10 @@ func (b *Bot) FetchBalance() (float64, error) {
 	return b.exchange.FetchBalance()
 }
 
+func (b *Bot) FetchAvailableBalance() (float64, error) {
+	return b.exchange.FetchAvailableBalance()
+}
+
 func (b *Bot) ActiveExchange() string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -605,6 +668,17 @@ func (b *Bot) TradeRecords(limit int) []storage.TradeRecord {
 		return nil
 	}
 	return records
+}
+
+func (b *Bot) LatestAIDecisionPreview() (storage.AIDecisionPreview, bool) {
+	if b.store == nil {
+		return storage.AIDecisionPreview{}, false
+	}
+	out, ok, err := b.store.LatestAIDecisionPreview()
+	if err != nil || !ok {
+		return storage.AIDecisionPreview{}, false
+	}
+	return out, true
 }
 
 func (b *Bot) RiskSnapshot() (storage.RiskSnapshot, bool) {
@@ -963,11 +1037,34 @@ func suggestedAmountByConfidence(confidence string, cfg config.TradeConfig, bala
 
 func (b *Bot) buildRiskPosition(signal models.TradeSignal, pd models.PriceData, pos *models.Position) (float64, bool, string) {
 	cfg := b.TradeConfig()
+	snapshot, err := b.loadRiskSnapshot()
+	if err != nil {
+		return 0, false, err.Error()
+	}
+	suggested := suggestedAmountByConfidence(signal.Confidence, cfg, snapshot.Balance, pd.Price)
+	plan := b.riskEngine.BuildOrderPlan(risk.OrderPlanInput{
+		Price:         pd.Price,
+		StopLoss:      signal.StopLoss,
+		Confidence:    signal.Confidence,
+		SuggestedSize: suggested,
+		Leverage:      cfg.Leverage,
+	}, snapshot)
+	if !plan.Approved {
+		return 0, false, plan.Reason
+	}
+	// 交易所精度保护
+	size := math.Round(plan.Size*10000) / 10000
+	if size <= 0 {
+		return 0, false, "风控后仓位过小"
+	}
+	return size, true, ""
+}
+
+func (b *Bot) loadRiskSnapshot() (risk.Snapshot, error) {
 	balance, err := b.exchange.FetchBalance()
 	if err != nil {
-		return 0, false, fmt.Sprintf("读取余额失败: %v", err)
+		return risk.Snapshot{}, fmt.Errorf("读取余额失败: %v", err)
 	}
-	suggested := suggestedAmountByConfidence(signal.Confidence, cfg, balance, pd.Price)
 	snapshot := risk.Snapshot{
 		Balance:       balance,
 		CurrentEquity: balance,
@@ -986,22 +1083,10 @@ func (b *Bot) buildRiskPosition(signal models.TradeSignal, pd models.PriceData, 
 			snapshot.ConsecutiveLosses = rs.ConsecutiveLosses
 		}
 	}
-	plan := b.riskEngine.BuildOrderPlan(risk.OrderPlanInput{
-		Price:         pd.Price,
-		StopLoss:      signal.StopLoss,
-		Confidence:    signal.Confidence,
-		SuggestedSize: suggested,
-		Leverage:      cfg.Leverage,
-	}, snapshot)
-	if !plan.Approved {
-		return 0, false, plan.Reason
+	if snapshot.PeakEquity < snapshot.CurrentEquity {
+		snapshot.PeakEquity = snapshot.CurrentEquity
 	}
-	// 交易所精度保护
-	size := math.Round(plan.Size*10000) / 10000
-	if size <= 0 {
-		return 0, false, "风控后仓位过小"
-	}
-	return size, true, ""
+	return snapshot, nil
 }
 
 func (b *Bot) confirmOrder(order models.OrderResult) error {
@@ -1181,11 +1266,14 @@ func validateSignalStrict(signal models.TradeSignal, price float64) (bool, strin
 	default:
 		return false, "schema_invalid", "confidence 仅支持 HIGH/MEDIUM/LOW"
 	}
-	if signal.StopLoss <= 0 || signal.TakeProfit <= 0 {
-		return false, "schema_invalid", "stop_loss/take_profit 必须大于 0"
-	}
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 		return false, "market_invalid", "价格无效"
+	}
+	if sig == "HOLD" {
+		return true, "ok", ""
+	}
+	if signal.StopLoss <= 0 || signal.TakeProfit <= 0 {
+		return false, "schema_invalid", "stop_loss/take_profit 必须大于 0"
 	}
 	if sig == "BUY" && !(signal.StopLoss < price && signal.TakeProfit > price) {
 		return false, "schema_invalid", "BUY 信号需满足 stop_loss < price < take_profit"

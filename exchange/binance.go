@@ -46,7 +46,7 @@ func (c *binanceClient) signQuery(raw string) string {
 
 func (c *binanceClient) requestPublic(path string, values url.Values) ([]byte, error) {
 	fullURL := binanceBaseURL + path
-	if values != nil && len(values) > 0 {
+	if len(values) > 0 {
 		fullURL += "?" + values.Encode()
 	}
 	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
@@ -171,6 +171,43 @@ func (c *binanceClient) FetchBalance() (float64, error) {
 				return v, nil
 			}
 			v, _ := strconv.ParseFloat(strings.TrimSpace(b.AvailableBalance), 64)
+			return v, nil
+		}
+	}
+	return 0, nil
+}
+
+func (c *binanceClient) FetchAvailableBalance() (float64, error) {
+	data, err := c.requestSigned(http.MethodGet, "/fapi/v2/account", nil)
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		AvailableBalance      string `json:"availableBalance"`
+		TotalAvailableBalance string `json:"totalAvailableBalance"`
+		Assets                []struct {
+			Asset             string `json:"asset"`
+			AvailableBalance  string `json:"availableBalance"`
+			MaxWithdrawAmount string `json:"maxWithdrawAmount"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return 0, err
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(resp.TotalAvailableBalance), 64); err == nil && v >= 0 {
+		return v, nil
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(resp.AvailableBalance), 64); err == nil && v >= 0 {
+		return v, nil
+	}
+	for _, b := range resp.Assets {
+		if !strings.EqualFold(strings.TrimSpace(b.Asset), "USDT") {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(b.AvailableBalance), 64); err == nil && v >= 0 {
+			return v, nil
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(b.MaxWithdrawAmount), 64); err == nil && v >= 0 {
 			return v, nil
 		}
 	}

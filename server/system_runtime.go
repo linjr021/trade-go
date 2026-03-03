@@ -20,8 +20,23 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 	startedAt := s.startedAt
 	restartCount := s.restartCount
 	schedulerRunning := s.schedulerRunning
+	realtimeRunning := s.realtimeLoopRunning
+	triggerMode := strings.TrimSpace(s.triggerMode)
 	nextRunAt := s.nextRunAt
 	s.mu.RUnlock()
+	if triggerMode == "" {
+		triggerMode = "idle"
+	}
+	engineRunning := schedulerRunning || realtimeRunning
+	schedulerMessage := "未启动"
+	switch triggerMode {
+	case "realtime":
+		schedulerMessage = boolStatus(realtimeRunning, "事件驱动已启动", "事件驱动未启动")
+	case "scheduler":
+		schedulerMessage = boolStatus(schedulerRunning, "已启动", "未启动")
+	default:
+		schedulerMessage = boolStatus(engineRunning, "已启动", "未启动")
+	}
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
@@ -103,8 +118,8 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 			},
 			{
 				"name":    "调度器",
-				"status":  boolStatus(schedulerRunning, "running", "stopped"),
-				"message": boolStatus(schedulerRunning, "已启动", "未启动"),
+				"status":  boolStatus(engineRunning, "running", "stopped"),
+				"message": schedulerMessage,
 			},
 			{
 				"name":    "SQLite",
@@ -156,6 +171,9 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 		},
 		"scheduler": map[string]any{
 			"running":     schedulerRunning,
+			"mode":        triggerMode,
+			"engine_on":   engineRunning,
+			"realtime_on": realtimeRunning,
 			"next_run_at": nextRunAt,
 		},
 	})

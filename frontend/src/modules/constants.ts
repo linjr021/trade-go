@@ -1,4 +1,3 @@
-// @ts-nocheck
 
 export const MENU_ITEMS = [
   { key: 'assets', label: '资产详情' },
@@ -36,7 +35,6 @@ export const envFieldGroups = [
     title: '运行配置',
     fields: [
       { key: 'PRODUCT_NAME', label: '产品名称' },
-      { key: 'PY_STRATEGY_URL', label: 'Python 策略服务 URL' },
       { key: 'MODE', label: '运行模式（prod/test/dev）' },
       { key: 'HTTP_ADDR', label: '服务地址（:8080）' },
     ],
@@ -79,8 +77,7 @@ export const envFieldDefs = envFieldGroups.flatMap((group) => group.fields)
 
 export const systemSettingDefaults = {
   PRODUCT_NAME: '21xG交易',
-  PY_STRATEGY_URL: 'http://127.0.0.1:9000',
-  PY_STRATEGY_ENABLED: 'ai_assisted,trend_following,mean_reversion,breakout',
+  AI_EXECUTION_STRATEGIES: '',
   AUTO_REVIEW_ENABLED: 'true',
   AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',
   AUTO_REVIEW_INTERVAL_SEC: '1800',
@@ -119,39 +116,3 @@ export const strategyGeneratorPromptTemplateDefault = `你是资深量化策略�
 
 6) 回测建议
 - 推荐回测区间、周期、指标、评估口径（总盈亏、胜率、盈亏比、回撤）`
-
-export const strategyTemplateFallback = `"""Sample custom strategy.
-
-Rename/copy this file and adjust logic.
-"""
-
-STRATEGY_ID = "sample_custom"
-
-
-def analyze(payload, features=None):
-    # payload: raw request body from Go
-    # features: extracted metrics (price/rsi/macd/atr_ratio/...)
-    price = 0.0
-    if isinstance(features, dict):
-        price = float(features.get("price", 0.0) or 0.0)
-
-    if price <= 0:
-        return {
-            "signal": "HOLD",
-            "reason": "invalid price",
-            "stop_loss": 0,
-            "take_profit": 0,
-            "confidence": "LOW",
-            "strategy_combo": STRATEGY_ID,
-        }
-
-    # Replace with your own logic
-    return {
-        "signal": "HOLD",
-        "reason": "template strategy: no entry",
-        "stop_loss": round(price * 0.99, 4),
-        "take_profit": round(price * 1.01, 4),
-        "confidence": "LOW",
-        "strategy_combo": STRATEGY_ID,
-    }
-`

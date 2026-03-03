@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -9,6 +11,23 @@ import (
 	"trade-go/indicators"
 	"trade-go/storage"
 )
+
+const (
+	executionStrategiesEnvKey = "AI_EXECUTION_STRATEGIES"
+)
+
+func isDeprecatedBuiltinStrategy(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ai_assisted", "trend_following", "mean_reversion", "breakout":
+		return true
+	default:
+		return false
+	}
+}
+
+func enabledStrategiesEnvRaw() string {
+	return strings.TrimSpace(os.Getenv(executionStrategiesEnvKey))
+}
 
 func normalizeAutoRegenCooldownSec(v int) int {
 	if v < 300 {
@@ -47,12 +66,18 @@ func habitByTimeframe(tf string) string {
 }
 
 func parseEnabledStrategiesEnv(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		raw = enabledStrategiesEnvRaw()
+	}
 	parts := strings.Split(strings.TrimSpace(raw), ",")
 	out := make([]string, 0, len(parts))
 	seen := map[string]bool{}
 	for _, p := range parts {
 		v := strings.TrimSpace(p)
 		if v == "" {
+			continue
+		}
+		if isDeprecatedBuiltinStrategy(v) {
 			continue
 		}
 		k := strings.ToLower(v)
@@ -92,7 +117,7 @@ func (s *Service) autoRegenTriggered(rs storage.RiskSnapshot) (bool, string, flo
 	return true, strings.Join(reasons, " / "), drawdown
 }
 
-func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs storage.RiskSnapshot) (generatedStrategyRecord, error) {
+func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs storage.RiskSnapshot) (generatedStrategyRecord, []string, error) {
 	cfg := s.bot.TradeConfig()
 	symbol := strings.ToUpper(strings.TrimSpace(cfg.Symbol))
 	if symbol == "" {
@@ -109,7 +134,7 @@ func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs stora
 		if err == nil {
 			err = fmt.Errorf("K线数据不足")
 		}
-		return generatedStrategyRecord{}, err
+		return generatedStrategyRecord{}, nil, err
 	}
 	ind := indicators.Calculate(candles)
 	trend := indicators.AnalyzeTrend(candles, ind)
@@ -144,56 +169,25 @@ func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs stora
 		directionBias,
 		cfg,
 	)
-	if strings.TrimSpace(gen.StrategyName) == "" {
-		gen.StrategyName = fmt.Sprintf("AUTO_%s_%s_%s", symbol, habit, time.Now().Format("150405"))
-	}
-	gen.StrategyName = strings.TrimSpace(gen.StrategyName) + "_auto"
+	gen.StrategyName = buildStandardStrategyName(symbol, habit, style, true)
 
 	record := generatedStrategyRecord{
 		ID:               fmt.Sprintf("auto_%d", time.Now().UnixNano()),
 		Name:             gen.StrategyName,
+		RuleKey:          buildStrategyRuleKey(symbol, habit, style, true),
 		PreferencePrompt: gen.PreferencePrompt,
 		GeneratorPrompt:  gen.GeneratorPrompt,
 		Logic:            gen.Logic,
 		Basis:            strings.TrimSpace(gen.Basis + " | 自动重生成原因: " + reason),
 		CreatedAt:        time.Now().Format(time.RFC3339),
+		LastUpdatedAt:    time.Now().Format(time.RFC3339),
+		Source:           "auto_regen",
+		WorkflowVersion:  loadSkillWorkflowConfig().Version,
+		WorkflowChain:    enabledSkillWorkflowSteps(loadSkillWorkflowConfig()),
 	}
-	st := readGeneratedStrategies()
-	st.Strategies = append([]generatedStrategyRecord{record}, st.Strategies...)
-	if len(st.Strategies) > 300 {
-		st.Strategies = st.Strategies[:300]
-	}
-	if err := writeGeneratedStrategies(st); err != nil {
-		return generatedStrategyRecord{}, err
-	}
-	finalStore := readGeneratedStrategies()
-	final := record
-	for _, item := range finalStore.Strategies {
-		if strings.TrimSpace(item.ID) == strings.TrimSpace(record.ID) {
-			final = item
-			break
-		}
-	}
-
-	currentEnabled := parseEnabledStrategiesEnv(os.Getenv("PY_STRATEGY_ENABLED"))
-	nextEnabled := []string{final.Name}
-	for _, item := range currentEnabled {
-		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(final.Name)) {
-			continue
-		}
-		nextEnabled = append(nextEnabled, item)
-		if len(nextEnabled) >= 3 {
-			break
-		}
-	}
-	updates := map[string]string{
-		"PY_STRATEGY_ENABLED": strings.Join(nextEnabled, ","),
-	}
-	if err := upsertDotEnv(".env", updates); err == nil {
-		for k, v := range updates {
-			_ = os.Setenv(k, v)
-		}
-		applyRuntimeConfigFromEnv()
+	final, nextEnabled, _, err := s.saveAndActivateGeneratedStrategy(record)
+	if err != nil {
+		return generatedStrategyRecord{}, nil, err
 	}
 
 	_ = s.bot.EmitRiskEvent("auto_strategy_regen", mustJSON(map[string]any{
@@ -205,7 +199,7 @@ func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs stora
 		"strategy_name":      final.Name,
 		"enabled":            nextEnabled,
 	}))
-	return final, nil
+	return final, nextEnabled, nil
 }
 
 func (s *Service) maybeAutoRegenerateStrategy() {
@@ -247,7 +241,7 @@ func (s *Service) maybeAutoRegenerateStrategy() {
 		return
 	}
 
-	final, err := s.generateAutoStrategy(reason, drawdown, rs)
+	final, _, err := s.generateAutoStrategy(reason, drawdown, rs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
@@ -258,4 +252,93 @@ func (s *Service) maybeAutoRegenerateStrategy() {
 	s.lastAutoStrategyRegenAt = now
 	s.nextAutoStrategyRegenAt = now.Add(time.Duration(cooldown) * time.Second)
 	s.lastAutoStrategyRegenReason = "已自动生成并启用策略: " + final.Name + "；触发原因: " + reason
+}
+
+func (s *Service) runAutoStrategyRegenNow(force bool) (map[string]any, error) {
+	now := time.Now()
+	cfg := s.bot.TradeConfig()
+	cooldown := normalizeAutoRegenCooldownSec(cfg.AutoStrategyRegenCooldownSec)
+	rs, ok := s.bot.RiskSnapshot()
+	if !ok {
+		return nil, fmt.Errorf("风险快照不可用，请先执行至少一次交易循环")
+	}
+	triggered, reason, drawdown := s.autoRegenTriggered(rs)
+	if !triggered && !force {
+		s.mu.Lock()
+		if s.lastAutoStrategyRegenAt.IsZero() {
+			s.nextAutoStrategyRegenAt = now.Add(time.Duration(cooldown) * time.Second)
+		} else {
+			s.nextAutoStrategyRegenAt = s.lastAutoStrategyRegenAt.Add(time.Duration(cooldown) * time.Second)
+		}
+		s.lastAutoStrategyRegenReason = "手动触发策略升级检查：当前未达到升级条件"
+		s.mu.Unlock()
+		return map[string]any{
+			"upgraded":           false,
+			"triggered":          false,
+			"force":              force,
+			"message":            "当前未触发升级条件（未达到连续亏损/回撤阈值）",
+			"reason":             "insufficient_trigger",
+			"drawdown_pct":       drawdown,
+			"consecutive_losses": rs.ConsecutiveLosses,
+			"checked_at":         now.Format(time.RFC3339),
+		}, nil
+	}
+	regenReason := reason
+	if !triggered && force {
+		regenReason = "手动强制升级（未触发自动条件）"
+	}
+	if strings.TrimSpace(regenReason) == "" {
+		regenReason = "手动触发策略升级"
+	}
+
+	final, nextEnabled, err := s.generateAutoStrategy(regenReason, drawdown, rs)
+	if err != nil {
+		s.mu.Lock()
+		s.lastAutoStrategyRegenReason = "手动升级失败: " + err.Error()
+		s.nextAutoStrategyRegenAt = now.Add(10 * time.Minute)
+		s.mu.Unlock()
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.lastAutoStrategyRegenAt = now
+	s.nextAutoStrategyRegenAt = now.Add(time.Duration(cooldown) * time.Second)
+	s.lastAutoStrategyRegenReason = "手动触发已升级并启用策略: " + final.Name + "；触发原因: " + regenReason
+	s.mu.Unlock()
+
+	return map[string]any{
+		"upgraded":           true,
+		"triggered":          triggered,
+		"force":              force,
+		"message":            "策略升级完成并已启用",
+		"strategy_name":      final.Name,
+		"reason":             regenReason,
+		"drawdown_pct":       drawdown,
+		"consecutive_losses": rs.ConsecutiveLosses,
+		"checked_at":         now.Format(time.RFC3339),
+		"active_strategy":    final.Name,
+		"enabled_strategies": nextEnabled,
+	}, nil
+}
+
+func (s *Service) handleAutoStrategyRegenNow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Force bool `json:"force"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	result, err := s.runAutoStrategyRegenNow(req.Force)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "立刻升级失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }

@@ -110,6 +110,7 @@ func (r *Runner) runWeb() error {
 	}
 	svc := server.NewService(r.bot)
 	if wsEnabled {
+		svc.SetRealtimeLoopRunning(true)
 		go r.runRealtimeStrategyLoop(svc)
 	} else {
 		svc.StartScheduler()
@@ -119,6 +120,7 @@ func (r *Runner) runWeb() error {
 }
 
 func (r *Runner) runRealtimeStrategyLoop(svc *server.Service) {
+	defer svc.SetRealtimeLoopRunning(false)
 	minIntervalSec := 10
 	if raw := strings.TrimSpace(os.Getenv("REALTIME_MIN_INTERVAL_SEC")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { Select } from '@/components/ui/dashboard-primitives'
 import { fmtNum, fmtPct } from '@/modules/format'
 import { MonthSelect } from '@/modules/month-select'
@@ -29,6 +28,9 @@ export function AssetsPageSection({
             <span className="asset-convert-prefix">≈</span>
             {fmtNum(assetOverview.total_funds, 2)}
             <span className="asset-convert-unit">USDT</span>
+          </div>
+          <div className="asset-convert-label">
+            可用资金：{fmtNum(assetOverview.available_funds, 2)} USDT
           </div>
           <div className="asset-kpi-grid">
             <article className="asset-kpi-item">

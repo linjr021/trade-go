@@ -720,23 +720,6 @@ func findLLMProductByID(in []llmProduct, id string) *llmProduct {
 	return nil
 }
 
-func resolveLLMProductForIntegration(store integrationStore, req llmIntegration) (llmProduct, bool) {
-	if p := findLLMProductByID(store.LLMProducts, req.ProductID); p != nil {
-		return *p, true
-	}
-	baseURL := strings.TrimSpace(req.BaseURL)
-	product := normalizeLLMProduct(req.Product)
-	if baseURL == "" {
-		return llmProduct{}, false
-	}
-	for _, x := range store.LLMProducts {
-		if strings.TrimSpace(x.BaseURL) == baseURL && normalizeLLMProduct(x.Product) == product {
-			return x, true
-		}
-	}
-	return llmProduct{}, false
-}
-
 func filterExchangeByID(in []exchangeIntegration, id string) []exchangeIntegration {
 	out := make([]exchangeIntegration, 0, len(in))
 	for _, x := range in {

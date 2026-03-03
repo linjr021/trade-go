@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"trade-go/config"
 	"trade-go/llmapi"
@@ -15,11 +16,10 @@ import (
 )
 
 type Client struct {
-	apiKey      string
-	aiBaseURL   string
-	aiModel     string
-	strategyURL string
-	httpClient  *http.Client
+	apiKey     string
+	aiBaseURL  string
+	aiModel    string
+	httpClient *http.Client
 }
 
 func NewClient() *Client {
@@ -28,11 +28,10 @@ func NewClient() *Client {
 		model = "chat-model"
 	}
 	return &Client{
-		apiKey:      config.Config.AIAPIKey,
-		aiBaseURL:   strings.TrimSpace(config.Config.AIBaseURL),
-		aiModel:     model,
-		strategyURL: strings.TrimSpace(config.Config.PyStrategyURL),
-		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		apiKey:     config.Config.AIAPIKey,
+		aiBaseURL:  strings.TrimSpace(config.Config.AIBaseURL),
+		aiModel:    model,
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -69,23 +68,40 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
+var (
+	usageRecorderMu sync.RWMutex
+	usageRecorder   func(channel, model, prompt, completion string)
+)
+
+func SetUsageRecorder(fn func(channel, model, prompt, completion string)) {
+	usageRecorderMu.Lock()
+	usageRecorder = fn
+	usageRecorderMu.Unlock()
+}
+
+func emitUsage(channel, model, prompt, completion string) {
+	usageRecorderMu.RLock()
+	fn := usageRecorder
+	usageRecorderMu.RUnlock()
+	if fn != nil {
+		fn(channel, model, prompt, completion)
+	}
+}
+
 func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal) (models.TradeSignal, error) {
+	return c.AnalyzeWithStrategies(priceData, currentPos, lastSignals, nil)
+}
+
+func (c *Client) AnalyzeWithStrategies(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal, strategyOverride []string) (models.TradeSignal, error) {
 	enabledStrategies := parseEnabledStrategiesFromEnv()
+	if len(strategyOverride) > 0 {
+		enabledStrategies = normalizeEnabledStrategies(strategyOverride)
+	}
 	generatedHints := loadGeneratedStrategyHints(enabledStrategies)
 	hasGeneratedHints := len(generatedHints) > 0
 
-	if c.strategyURL != "" && !hasGeneratedHints {
-		sig, err := c.analyzeByPython(priceData, currentPos, lastSignals, enabledStrategies)
-		if err == nil {
-			return sig, nil
-		}
-		fmt.Printf("Python策略服务调用失败，尝试通用AI兜底: %v\n", err)
-		if c.apiKey == "" || c.aiBaseURL == "" {
-			return fallbackSignal(priceData), nil
-		}
-	}
-	if c.strategyURL != "" && hasGeneratedHints {
-		fmt.Printf("检测到已启用生成策略(%d条)，切换通用AI执行以应用策略规则\n", len(generatedHints))
+	if hasGeneratedHints {
+		fmt.Printf("检测到已启用生成策略(%d条)，使用通用AI执行以应用策略规则\n", len(generatedHints))
 	}
 	if c.apiKey == "" || c.aiBaseURL == "" {
 		return fallbackSignal(priceData), nil
@@ -143,6 +159,7 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 
 	content := chatResp.Choices[0].Message.Content
 	fmt.Printf("AI 原始回复: %s\n", content)
+	emitUsage("decision_engine", c.aiModel, prompt, content)
 
 	signal, err := parseSignal(content)
 	if err != nil {
@@ -151,47 +168,6 @@ func (c *Client) Analyze(priceData models.PriceData, currentPos *models.Position
 	ensureStrategyMeta(&signal)
 	signal.Timestamp = time.Now()
 	return signal, nil
-}
-
-func (c *Client) analyzeByPython(priceData models.PriceData, currentPos *models.Position, lastSignals []models.TradeSignal, enabledStrategies []string) (models.TradeSignal, error) {
-	url := strings.TrimRight(c.strategyURL, "/") + "/analyze"
-	reqBody := map[string]interface{}{
-		"price_data":         priceData,
-		"current_pos":        currentPos,
-		"last_signals":       lastSignals,
-		"timeframe":          config.Config.Trade.Timeframe,
-		"symbol":             config.Config.Trade.Symbol,
-		"enabled_strategies": enabledStrategies,
-	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return models.TradeSignal{}, err
-	}
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return models.TradeSignal{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return models.TradeSignal{}, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return models.TradeSignal{}, fmt.Errorf("python strategy http %d: %s", resp.StatusCode, string(raw))
-	}
-
-	var sig models.TradeSignal
-	if err := json.Unmarshal(raw, &sig); err != nil {
-		return models.TradeSignal{}, fmt.Errorf("解析python策略响应失败: %w", err)
-	}
-	if sig.Signal == "" || sig.StopLoss == 0 || sig.TakeProfit == 0 {
-		return models.TradeSignal{}, fmt.Errorf("python策略响应字段不完整")
-	}
-	ensureStrategyMeta(&sig)
-	sig.Timestamp = time.Now()
-	return sig, nil
 }
 
 func parseSignal(content string) (models.TradeSignal, error) {
@@ -206,7 +182,11 @@ func parseSignal(content string) (models.TradeSignal, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &sig); err != nil {
 		return models.TradeSignal{}, err
 	}
-	if sig.Signal == "" || sig.StopLoss == 0 || sig.TakeProfit == 0 {
+	side := strings.ToUpper(strings.TrimSpace(sig.Signal))
+	if side == "" {
+		return models.TradeSignal{}, fmt.Errorf("信号字段不完整")
+	}
+	if side != "HOLD" && (sig.StopLoss == 0 || sig.TakeProfit == 0) {
 		return models.TradeSignal{}, fmt.Errorf("信号字段不完整")
 	}
 	return sig, nil
@@ -267,12 +247,20 @@ func bbPosStr(pos float64) string {
 
 func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models.TradeSignal, enabledStrategies []string, generatedHints []generatedStrategyHint) string {
 	cfg := config.Config.Trade
+	symbol := strings.TrimSpace(pd.Symbol)
+	if symbol == "" {
+		symbol = cfg.Symbol
+	}
+	timeframe := strings.TrimSpace(pd.Timeframe)
+	if timeframe == "" {
+		timeframe = cfg.Timeframe
+	}
 	t := pd.Technical
 	tr := pd.Trend
 	lv := pd.Levels
 
 	var klines strings.Builder
-	klines.WriteString(fmt.Sprintf("【最近5根%s K线数据】\n", cfg.Timeframe))
+	klines.WriteString(fmt.Sprintf("【最近5根%s K线数据】\n", timeframe))
 	last5 := pd.KlineData
 	if len(last5) > 5 {
 		last5 = last5[len(last5)-5:]
@@ -397,10 +385,10 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 
 【输出要求】
 只返回JSON对象，字段必须齐全：
-{"signal":"BUY|SELL|HOLD","reason":"<=80字","stop_loss":数字,"take_profit":数字,"confidence":"HIGH|MEDIUM|LOW","strategy_combo":"trend_following|mean_reversion|breakout|no_trade"}
+{"signal":"BUY|SELL|HOLD","reason":"<=80字","stop_loss":数字,"take_profit":数字,"confidence":"HIGH|MEDIUM|LOW","strategy_combo":"策略标识字符串"}
 
 禁止输出markdown、代码块、解释性前后缀。`,
-		cfg.Symbol, cfg.Timeframe, klines.String(),
+		symbol, timeframe, klines.String(),
 		t.SMA5, sma5Pct, t.SMA20, sma20Pct, t.SMA50, sma50Pct,
 		tr.ShortTerm, tr.MediumTerm, tr.Overall, tr.MACD,
 		t.RSI, rsiStatus(t.RSI), t.MACD, t.MACDSignal,
@@ -419,7 +407,7 @@ func buildPrompt(pd models.PriceData, pos *models.Position, lastSignals []models
 }
 
 func parseEnabledStrategiesFromEnv() []string {
-	raw := strings.TrimSpace(os.Getenv("PY_STRATEGY_ENABLED"))
+	raw := strings.TrimSpace(os.Getenv("AI_EXECUTION_STRATEGIES"))
 	if raw == "" {
 		return nil
 	}
@@ -428,6 +416,34 @@ func parseEnabledStrategiesFromEnv() []string {
 	seen := map[string]bool{}
 	for _, part := range parts {
 		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		lower := strings.ToLower(v)
+		if lower == "ai_assisted" || lower == "trend_following" || lower == "mean_reversion" || lower == "breakout" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, v)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeEnabledStrategies(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		v := strings.TrimSpace(item)
 		if v == "" {
 			continue
 		}

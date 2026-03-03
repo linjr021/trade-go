@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { Button as ShadButton } from '@/components/ui/button'
 import {
@@ -22,37 +22,37 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-export function ConfigProvider({ children }) {
+export function ConfigProvider({ children }: { children?: ReactNode }) {
   return <>{children}</>
 }
 
-export function AntdApp({ children }) {
+export function AntdApp({ children }: { children?: ReactNode }) {
   return <>{children}</>
 }
 
 export const Layout = Object.assign(
-  function LayoutRoot({ className, children }) {
-    return <div className={cn('min-h-screen w-full', className)}>{children}</div>
+  function LayoutRoot({ className, children, ...rest }: { className?: string; children?: ReactNode; [key: string]: any }) {
+    return <div className={cn('min-h-screen w-full', className)} {...rest}>{children}</div>
   },
   {
-    Sider: function LayoutSider({ className, width, children }) {
+    Sider: function LayoutSider({ className, width, children, ...rest }: { className?: string; width?: number; children?: ReactNode; [key: string]: any }) {
       const siderStyle = width ? { width, minWidth: width, flex: `0 0 ${width}px` } : undefined
       return (
-        <aside className={cn('shad-layout-sider', className)} style={siderStyle}>
+        <aside className={cn('shad-layout-sider', className)} style={siderStyle} {...rest}>
           {children}
         </aside>
       )
     },
-    Header: function LayoutHeader({ className, children }) {
-      return <header className={cn('shad-layout-header', className)}>{children}</header>
+    Header: function LayoutHeader({ className, children, ...rest }: { className?: string; children?: ReactNode; [key: string]: any }) {
+      return <header className={cn('shad-layout-header', className)} {...rest}>{children}</header>
     },
-    Content: function LayoutContent({ className, children }) {
-      return <main className={cn('shad-layout-content', className)}>{children}</main>
+    Content: function LayoutContent({ className, children, ...rest }: { className?: string; children?: ReactNode; [key: string]: any }) {
+      return <main className={cn('shad-layout-content', className)} {...rest}>{children}</main>
     },
   },
 )
 
-export function Menu({ className, selectedKeys = [], items = [], onClick }) {
+export function Menu({ className, selectedKeys = [], items = [], onClick }: { className?: string; selectedKeys?: any[]; items?: any[]; onClick?: (payload: { key: string }) => void; [key: string]: any }) {
   const selectedSet = new Set((selectedKeys || []).map((x) => String(x)))
   return (
     <ul className={cn('space-y-1 dashboard-dir-menu', className)}>
@@ -81,7 +81,7 @@ export function Menu({ className, selectedKeys = [], items = [], onClick }) {
   )
 }
 
-export function Select({ className, value, options = [], onChange, size = 'middle', disabled = false }) {
+export function Select({ className, value, options = [], onChange, size = 'middle', disabled = false }: { className?: string; value?: any; options?: any[]; onChange?: (value: string) => void; size?: 'small' | 'middle' | 'large' | string; disabled?: boolean; [key: string]: any }) {
   const triggerSize = size === 'small' ? 'h-9' : 'h-10'
   return (
     <ShadSelect value={String(value ?? '')} onValueChange={(v) => onChange?.(v)} disabled={disabled}>
@@ -99,7 +99,7 @@ export function Select({ className, value, options = [], onChange, size = 'middl
   )
 }
 
-export function Space({ children, wrap = false }) {
+export function Space({ children, wrap = false }: { children?: ReactNode; wrap?: boolean }) {
   return (
     <div className={cn('flex items-center gap-2', wrap && 'flex-wrap')}>
       {children}
@@ -107,7 +107,7 @@ export function Space({ children, wrap = false }) {
   )
 }
 
-export function Tabs({ className, activeKey, onChange, items = [] }) {
+export function Tabs({ className, activeKey, onChange, items = [] }: { className?: string; activeKey?: string; onChange?: (key: string) => void; items?: Array<{ key: string; label: ReactNode; children?: ReactNode }>; [key: string]: any }) {
   const safeItems = Array.isArray(items) ? items : []
   const resolvedKey = String(activeKey ?? safeItems[0]?.key ?? '')
   return (
@@ -128,7 +128,7 @@ export function Tabs({ className, activeKey, onChange, items = [] }) {
   )
 }
 
-export function Table({ className, columns = [], dataSource = [], pagination, scroll, expandable }) {
+export function Table({ className, columns = [], dataSource = [], pagination = {}, scroll = {}, expandable = {}, size: _size, ...rest }: { className?: string; columns?: any[]; dataSource?: any[]; pagination?: any; scroll?: any; expandable?: any; size?: string; [key: string]: any }) {
   const pageSize = Number(pagination?.pageSize || 0)
   const paged = pageSize > 0
   const [page, setPage] = useState(1)
@@ -155,7 +155,7 @@ export function Table({ className, columns = [], dataSource = [], pagination, sc
   }
 
   return (
-    <div className={cn('dashboard-table-wrap rounded-lg border bg-card', className)}>
+    <div className={cn('dashboard-table-wrap rounded-lg border bg-card', className)} {...rest}>
       <div className="overflow-x-auto">
         <div style={bodyStyle}>
           <table className="dashboard-table w-full text-sm" style={minWidth ? { minWidth } : undefined}>
@@ -233,7 +233,7 @@ export function Table({ className, columns = [], dataSource = [], pagination, sc
   )
 }
 
-export function Modal({ open, title, onCancel, footer, children }) {
+export function Modal({ open, title, onCancel, footer, children }: { open?: boolean; title?: ReactNode; onCancel?: () => void; footer?: ReactNode; children?: ReactNode; [key: string]: any }) {
   return (
     <Dialog open={Boolean(open)} onOpenChange={(next) => { if (!next) onCancel?.() }}>
       <DialogContent className="sm:max-w-2xl">

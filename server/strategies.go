@@ -1,13 +1,8 @@
 package server
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
-	"time"
-	"trade-go/config"
 )
 
 func (s *Service) handleStrategies(w http.ResponseWriter, r *http.Request) {
@@ -23,77 +18,31 @@ func (s *Service) handleStrategies(w http.ResponseWriter, r *http.Request) {
 			generatedNames = append(generatedNames, name)
 		}
 	}
-	baseAvailable := []string{"ai_assisted", "trend_following", "mean_reversion", "breakout"}
-	mergedFallbackAvailable := append([]string{}, baseAvailable...)
-	mergedFallbackAvailable = append(mergedFallbackAvailable, generatedNames...)
-	fallback := map[string]any{
-		"available": mergedFallbackAvailable,
-		"enabled":   []string{},
-	}
-	pyURL := strings.TrimSpace(config.Config.PyStrategyURL)
-	if pyURL == "" {
-		writeJSON(w, http.StatusOK, fallback)
-		return
-	}
+	available := append([]string{}, generatedNames...)
+	available = uniqueStrings(available)
 
-	url := strings.TrimRight(pyURL, "/") + "/strategies"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		writeJSON(w, http.StatusOK, fallback)
-		return
+	enabledRaw := parseEnabledStrategiesEnv("")
+	enabled := make([]string, 0, len(enabledRaw))
+	availSet := map[string]bool{}
+	for _, item := range available {
+		availSet[strings.ToLower(strings.TrimSpace(item))] = true
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusOK, fallback)
-		return
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		writeJSON(w, http.StatusOK, fallback)
-		return
-	}
-
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		writeJSON(w, http.StatusOK, fallback)
-		return
-	}
-	if out == nil {
-		out = map[string]any{}
-	}
-	if val, ok := out["available"]; ok {
-		merged := append([]string{}, parseStrategiesAny(val)...)
-		merged = append(merged, generatedNames...)
-		out["available"] = uniqueStrings(merged)
-	} else {
-		out["available"] = fallback["available"]
-	}
-	if _, ok := out["enabled"]; !ok {
-		out["enabled"] = []string{}
-	}
-	out["source"] = fmt.Sprintf("%s/strategies", strings.TrimRight(pyURL, "/"))
-	writeJSON(w, http.StatusOK, out)
-}
-
-func parseStrategiesAny(v any) []string {
-	items, ok := v.([]interface{})
-	if !ok {
-		ss, ok2 := v.([]string)
-		if !ok2 {
-			return nil
+	for _, item := range enabledRaw {
+		k := strings.ToLower(strings.TrimSpace(item))
+		if !availSet[k] {
+			continue
 		}
-		return uniqueStrings(ss)
-	}
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		name := strings.TrimSpace(anyToString(it))
-		if name != "" {
-			out = append(out, name)
+		enabled = append(enabled, strings.TrimSpace(item))
+		if len(enabled) >= 3 {
+			break
 		}
 	}
-	return uniqueStrings(out)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": available,
+		"enabled":   enabled,
+		"source":    "local_ai_workflow",
+	})
 }
 
 func uniqueStrings(in []string) []string {

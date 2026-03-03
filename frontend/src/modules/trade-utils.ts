@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { envFieldDefs, systemSettingDefaults } from '@/modules/constants'
 
 const legacyEmptyLikeModels = new Set(['chat-model'])
@@ -9,7 +8,7 @@ export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, n))
 }
 
-export function toFixedNumber(value, digits = 2) {
+function toFixedNumber(value, digits = 2) {
   const n = Number(value)
   if (Number.isNaN(n)) return 0
   return Number(n.toFixed(digits))
@@ -120,7 +119,7 @@ export function joinFieldMessages(fieldMap) {
   return parts.join('；')
 }
 
-export function mapBacktestSummary(summary, fallback = {}) {
+export function mapBacktestSummary(summary: any, fallback: any = {}) {
   const wins = Number(summary?.wins || 0)
   const losses = Number(summary?.losses || 0)
   const rawRatio = Number(summary?.ratio)
