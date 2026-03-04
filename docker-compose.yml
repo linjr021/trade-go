@@ -4,9 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile.backend
       args:
-        GOPROXY: "${GO_PROXY:-https://goproxy.cn,direct}"
-        GOSUMDB: "${GO_SUMDB:-sum.golang.google.cn}"
-        ALPINE_MIRROR: "${ALPINE_MIRROR:-mirrors.aliyun.com}"
+        GOPROXY: "${GO_PROXY:-https://proxy.golang.org,direct}"
+        GOSUMDB: "${GO_SUMDB:-sum.golang.org}"
     restart: unless-stopped
     env_file:
       - .env
@@ -25,7 +24,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmmirror.com}"
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
     restart: unless-stopped
     depends_on:
       - backend

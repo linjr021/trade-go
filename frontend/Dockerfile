@@ -1,5 +1,5 @@
 FROM node:20-alpine AS builder
-ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /src
 COPY frontend/package*.json ./
 RUN npm config set registry "${NPM_REGISTRY}" \
