@@ -506,9 +506,28 @@ cd frontend && npm run check
 cd frontend && npm run build
 ```
 
-## 13. 常见问题
+## 13. 版本管理（推荐流程）
 
-### 12.1 为什么“智能体已配置”但策略生成显示回退模板？
+- 版本管理规范文档：`docs/GIT_WORKFLOW.md`
+- 提交模板文件：`.gitmessage.txt`
+- 发布标签脚本：`scripts/release_tag.sh`
+
+建议首次执行：
+
+```bash
+git config commit.template .gitmessage.txt
+chmod +x scripts/release_tag.sh
+```
+
+发布新版本（Tag）：
+
+```bash
+bash scripts/release_tag.sh v1.0.0
+```
+
+## 14. 常见问题
+
+### 14.1 为什么“智能体已配置”但策略生成显示回退模板？
 
 常见原因：
 
@@ -518,19 +537,19 @@ cd frontend && npm run build
 
 建议先用系统设置里的“测试可达”功能验证。
 
-### 12.2 为什么切换交易所后数据没同步？
+### 14.2 为什么切换交易所后数据没同步？
 
 交易所生效依赖 `active_exchange_id`，请在系统设置中执行“绑定/激活”。
 
-### 12.3 回测数据来源是当前交易所吗？
+### 14.3 回测数据来源是当前交易所吗？
 
 当前回测 K 线抓取逻辑走 Binance 公共历史 K 线接口（`server/backtest.go`）。
 
-### 12.4 `MODE` 该填什么？
+### 14.4 `MODE` 该填什么？
 
 推荐 `web`。代码运行层支持 `web/cli`，系统设置校验同时兼容了 `prod/test/dev` 文本。
 
-## 14. 安全与风险说明
+## 15. 安全与风险说明
 
 - 本项目仅用于研究与开发测试，不构成投资建议。
 - 实盘前请确认：

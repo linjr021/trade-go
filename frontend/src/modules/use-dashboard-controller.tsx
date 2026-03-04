@@ -18,11 +18,9 @@ import {
   systemSettingDefaults,
 } from '@/modules/constants'
 import {
-  calcPaperPnL,
   clamp,
   countHanChars,
   joinFieldMessages,
-  loadPaperLocalRecords,
   makeUniqueNameWithIndex,
   mapBacktestSummary,
   mergeSystemDefaults,
@@ -66,7 +64,11 @@ import {
   getBacktestHistoryDetail,
   deleteBacktestHistory,
   runNow,
-  runPaperSimulateStep,
+  getPaperState,
+  updatePaperConfig,
+  startPaperSimulation,
+  stopPaperSimulation,
+  resetPaperPnL,
   saveSystemSettings,
   getSystemRuntimeStatus,
   restartSystemRuntime,
@@ -257,65 +259,6 @@ function normalizeParamSnapshot(raw: Record<string, any> = {}) {
   }
 }
 
-function buildLiveParamSnapshot(status: Record<string, any> = {}, fallbackSettings: Record<string, any> = {}) {
-  const cfg = status?.trade_config || {}
-  const mode = String(cfg?.position_sizing_mode || fallbackSettings?.positionSizingMode || 'margin_pct').trim().toLowerCase()
-  const highMarginPct = Number(cfg?.high_confidence_margin_pct)
-  const lowMarginPct = Number(cfg?.low_confidence_margin_pct)
-  return normalizeParamSnapshot({
-    positionSizingMode: mode,
-    leverage: Number(cfg?.leverage ?? fallbackSettings?.leverage),
-    highConfidenceAmount: Number(cfg?.high_confidence_amount ?? fallbackSettings?.highConfidenceAmount),
-    lowConfidenceAmount: Number(cfg?.low_confidence_amount ?? fallbackSettings?.lowConfidenceAmount),
-    highConfidenceMarginPct: Number.isFinite(highMarginPct)
-      ? highMarginPct * 100
-      : Number(fallbackSettings?.highConfidenceMarginPct || 0),
-    lowConfidenceMarginPct: Number.isFinite(lowMarginPct)
-      ? lowMarginPct * 100
-      : Number(fallbackSettings?.lowConfidenceMarginPct || 0),
-  })
-}
-
-function buildPaperParamSnapshot(settings: Record<string, any> = {}) {
-  return normalizeParamSnapshot({
-    positionSizingMode: settings?.positionSizingMode,
-    leverage: settings?.leverage,
-    highConfidenceAmount: settings?.highConfidenceAmount,
-    lowConfidenceAmount: settings?.lowConfidenceAmount,
-    highConfidenceMarginPct: settings?.highConfidenceMarginPct,
-    lowConfidenceMarginPct: settings?.lowConfidenceMarginPct,
-  })
-}
-
-function pushStrategyHistory(
-  prev: any[] = [],
-  next: any[] = [],
-  source = 'sync',
-  metaMap: Record<string, any> = {},
-  paramSnapshot: Record<string, any> = {},
-) {
-  const normalized = parseStrategies(Array.isArray(next) ? next : []).slice(0, 3)
-  if (!normalized.length) return Array.isArray(prev) ? prev : []
-  const list = Array.isArray(prev) ? prev : []
-  const latest = list[0] || null
-  const latestList = parseStrategies(Array.isArray(latest?.strategies) ? latest.strategies : [])
-  if (sameStrategyList(latestList, normalized)) return list
-  const now = new Date().toISOString()
-  const meta = {}
-  for (const strategy of normalized) {
-    meta[strategy] = normalizeStrategyMetaByName(strategy, metaMap?.[strategy] || {})
-  }
-  const item = {
-    id: `strategy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    ts: now,
-    strategies: normalized,
-    source: String(source || 'sync'),
-    meta,
-    params: normalizeParamSnapshot(paramSnapshot),
-  }
-  return [item, ...list].slice(0, 60)
-}
-
 function patchStrategyHistoryMeta(prev: any[] = [], metaMap: Record<string, any> = {}) {
   const list = Array.isArray(prev) ? prev : []
   if (!list.length) return list
@@ -400,8 +343,6 @@ export function useDashboardController() {
   const [paperPair, setPaperPair] = useState('BTCUSDT')
   const activePairHydratedRef = useRef(false)
   const activePairUserOverrideRef = useRef(false)
-  const liveHistoryKeyRef = useRef('')
-  const paperHistoryKeyRef = useRef('')
   const [liveViewTab, setLiveViewTab] = useState('overview')
   const [paperViewTab, setPaperViewTab] = useState('overview')
   const [strategyPickerOpen, setStrategyPickerOpen] = useState(false)
@@ -479,41 +420,15 @@ export function useDashboardController() {
     passphrase: '',
   })
   const [paperMargin, setPaperMargin] = useState(200)
-  const [paperLocalRecords, setPaperLocalRecords] = useState(() => loadPaperLocalRecords())
+  const [paperRecords, setPaperRecords] = useState<any[]>([])
   const [paperLatestDecisionMap, setPaperLatestDecisionMap] = useState({})
-  const [paperPnlBaselineMap, setPaperPnlBaselineMap] = useState(() => {
-    try {
-      const raw = localStorage.getItem('paper-pnl-baseline-map')
-      const parsed = raw ? JSON.parse(raw) : {}
-      return parsed && typeof parsed === 'object' ? parsed : {}
-    } catch {
-      return {}
-    }
-  })
+  const [paperPnlBaselineMap, setPaperPnlBaselineMap] = useState({})
+  const [paperRuntime, setPaperRuntime] = useState<Record<string, any>>({})
   const [paperSimRunning, setPaperSimRunning] = useState(false)
   const [paperSimLoading, setPaperSimLoading] = useState(false)
-  const paperSimTimerRef = useRef(null)
-  const paperSimStepInFlightRef = useRef(false)
+  const paperConfigSyncTimerRef = useRef<any>(null)
+  const paperConfigHashRef = useRef('')
   const paperSettingsHydratedRef = useRef(false)
-  const paperLastPriceRef = useRef(0)
-  const paperConfigRef = useRef<{
-    pair: string
-    margin: number
-    settings: Record<string, any>
-    strategies: string[]
-  }>({
-    pair: 'BTCUSDT',
-    margin: 200,
-    settings: {
-      positionSizingMode: 'margin_pct',
-      highConfidenceAmount: 0.01,
-      lowConfidenceAmount: 0.005,
-      highConfidenceMarginPct: 5,
-      lowConfidenceMarginPct: 0,
-      leverage: 20,
-    },
-    strategies: [],
-  })
 
   const [runningNow, setRunningNow] = useState(false)
   const [startingLive, setStartingLive] = useState(false)
@@ -567,7 +482,6 @@ export function useDashboardController() {
   const [btHistoryDeletingId, setBtHistoryDeletingId] = useState(0)
   const [btHistorySelectedId, setBtHistorySelectedId] = useState(0)
 
-  const [liveStrategyStartedAt, setLiveStrategyStartedAt] = useState(Date.now())
   const [assetRange, setAssetRange] = useState('30D')
   const [assetMonth, setAssetMonth] = useState(HISTORY_MAX_MONTH)
   const [assetOverview, setAssetOverview] = useState({})
@@ -582,8 +496,8 @@ export function useDashboardController() {
     return themeMode === 'dark' ? 'dark' : 'light'
   }, [themeMode, prefersDark])
   const rawProductName = String(systemSettings?.PRODUCT_NAME || '').trim()
-  const productName = !rawProductName || rawProductName === 'AI 交易看板'
-    ? '21xG交易'
+  const productName = !rawProductName || rawProductName === 'AI 交易看板' || rawProductName === '21xG交易'
+    ? '21xG'
     : rawProductName
   const generatedStrategyNames = useMemo(
     () => generatedStrategies.map((s) => String(s?.name || '').trim()).filter(Boolean),
@@ -687,7 +601,6 @@ export function useDashboardController() {
         })
         if (!enabledFromStatus.includes(activeStrategy)) {
           setActiveStrategy(enabledFromStatus[0])
-          setLiveStrategyStartedAt(Date.now())
         }
         if (!paperStrategyManualRef.current) {
           setPaperStrategySelection((old) => (sameStrategyList(old, enabledFromStatus) ? old : enabledFromStatus))
@@ -703,6 +616,7 @@ export function useDashboardController() {
       }
 
       const cfg = st?.trade_config || {}
+      setLiveStrategyHistory(Array.isArray(st?.live_strategy_history) ? st.live_strategy_history : [])
       if (!liveSettingsDirtyRef.current) {
         setSettings((old) => ({
           ...old,
@@ -728,7 +642,6 @@ export function useDashboardController() {
             leverage: Number(cfg.leverage ?? old.leverage ?? 20),
           }),
         }))
-        paperSettingsHydratedRef.current = true
       }
       if (cfg?.symbol) {
         const symbol = String(cfg.symbol).toUpperCase()
@@ -781,162 +694,198 @@ export function useDashboardController() {
   }
 
   const paperTradeRecords = useMemo(
-    () => paperLocalRecords.filter((r) => {
+    () => paperRecords.filter((r) => {
       const isApproved = r?.approved === undefined
         ? String(r?.signal || '').toUpperCase() !== 'HOLD'
         : Boolean(r?.approved)
-      return isApproved && (!r?.symbol || r.symbol === paperPair)
+      return isApproved && (!r?.symbol || String(r.symbol).toUpperCase() === String(paperPair || '').toUpperCase())
     }),
-    [paperLocalRecords, paperPair],
+    [paperRecords, paperPair],
   )
 
-  const runPaperSimStep = async (silentError = false) => {
-    if (paperSimStepInFlightRef.current) return
-    paperSimStepInFlightRef.current = true
-    const simCfg = paperConfigRef.current
-    const simPair = String(simCfg.pair || paperPair || 'BTCUSDT').toUpperCase()
-    const simStrategies = parseStrategies(Array.isArray(simCfg?.strategies) ? simCfg.strategies : []).slice(0, 3)
-    const strategyCombo = simStrategies.join(' / ')
-    try {
-      const payload = {
-        symbol: simPair,
-        balance: Number(simCfg?.margin ?? paperMargin ?? 0),
-        position_sizing_mode: String(simCfg?.settings?.positionSizingMode || 'margin_pct'),
-        high_confidence_amount: Number(simCfg?.settings?.highConfidenceAmount ?? 0),
-        low_confidence_amount: Number(simCfg?.settings?.lowConfidenceAmount ?? 0),
-        high_confidence_margin_pct: Number(simCfg?.settings?.highConfidenceMarginPct ?? 0),
-        low_confidence_margin_pct: Number(simCfg?.settings?.lowConfidenceMarginPct ?? 0),
-        leverage: normalizeLeverage(simCfg?.settings?.leverage),
-        enabled_strategies: simStrategies,
-      }
-      const res = await runPaperSimulateStep(payload)
-      const record = res?.data?.record || {}
-      const price = Number(record?.price || 0)
-      const prev = Number(paperLastPriceRef.current || 0) || price
-      if (price > 0) paperLastPriceRef.current = price
-      setPaperLatestDecisionMap((prevMap) => ({
-        ...(prevMap || {}),
-        [simPair]: {
-          ...record,
-          symbol: String(record?.symbol || simPair),
-          strategy_combo: String(record?.strategy_combo || strategyCombo || 'paper_ai_dry_run'),
-          risk_reason: String(record?.risk_reason || record?.reason || ''),
-          price: Number(record?.price || 0),
-          stop_loss: Number(record?.stop_loss || 0),
-          take_profit: Number(record?.take_profit || 0),
-          approved_size: Number(record?.approved_size || 0),
-          approved: typeof record?.approved === 'boolean'
-            ? record.approved
-            : String(record?.signal || '').toUpperCase() !== 'HOLD',
-        },
-      }))
-
-      const signal = String(record?.signal || '').toUpperCase()
-      const approved = record?.approved === undefined ? signal !== 'HOLD' : Boolean(record?.approved)
-      if (!approved || signal === 'HOLD') return
-
-      const size = Number(record?.approved_size || 0)
-      if (!(size > 0)) return
-      const pnl = calcPaperPnL(signal, prev, price, size)
-
-      const rec = {
-        id: String(record?.id || `paper-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`),
-        ts: String(record?.ts || new Date().toISOString()),
-        symbol: String(record?.symbol || simPair),
-        signal,
-        confidence: String(record?.confidence || ''),
-        strategy_combo: String(record?.strategy_combo || strategyCombo || 'paper_ai_dry_run'),
-        approved: true,
-        approved_size: size,
-        price: price,
-        stop_loss: Number(record?.stop_loss || 0),
-        take_profit: Number(record?.take_profit || 0),
-        unrealized_pnl: Number(record?.unrealized_pnl || pnl || 0),
-        mode: String(record?.position_sizing_mode || simCfg?.settings?.positionSizingMode || 'margin_pct'),
-        leverage: Number(record?.leverage || normalizeLeverage(simCfg?.settings?.leverage)),
-        source: String(record?.source || 'paper_ai_dry_run'),
-        risk_reason: String(record?.risk_reason || record?.reason || ''),
-      }
-      setPaperLocalRecords((arr) => [rec, ...arr].slice(0, 2000))
-    } catch (e) {
-      if (silentError) return
-      const reason = e?.response?.data?.error || e?.message || '模拟执行失败'
-      throw new Error(reason)
-    } finally {
-      paperSimStepInFlightRef.current = false
+  const buildPaperConfigPayload = useCallback((override: Record<string, any> = {}) => {
+    const modeRaw = String(override?.position_sizing_mode || paperSettings.positionSizingMode || 'margin_pct').trim().toLowerCase()
+    const mode = modeRaw === 'contracts' ? 'contracts' : 'margin_pct'
+    return {
+      symbol: String(override?.symbol || paperPair || 'BTCUSDT').toUpperCase(),
+      balance: normalizeDecimal(override?.balance ?? paperMargin, 0, 1_000_000_000),
+      position_sizing_mode: mode,
+      high_confidence_amount: normalizeDecimal(override?.high_confidence_amount ?? paperSettings.highConfidenceAmount, 0, 1_000_000),
+      low_confidence_amount: normalizeDecimal(override?.low_confidence_amount ?? paperSettings.lowConfidenceAmount, 0, 1_000_000),
+      high_confidence_margin_pct: normalizeDecimal(override?.high_confidence_margin_pct ?? paperSettings.highConfidenceMarginPct, 0, 100),
+      low_confidence_margin_pct: normalizeDecimal(override?.low_confidence_margin_pct ?? paperSettings.lowConfidenceMarginPct, 0, 100),
+      leverage: normalizeLeverage(override?.leverage ?? paperSettings.leverage),
+      enabled_strategies: parseStrategies(
+        override?.enabled_strategies !== undefined
+          ? (Array.isArray(override.enabled_strategies) ? override.enabled_strategies : [])
+          : paperStrategySelection,
+      ).slice(0, 3),
+      interval_sec: Math.round(clamp(override?.interval_sec ?? paperRuntime?.interval_sec ?? 8, 2, 300)),
     }
-  }
+  }, [paperPair, paperMargin, paperSettings, paperStrategySelection, paperRuntime?.interval_sec])
+
+  const applyPaperState = useCallback((payload: Record<string, any>, hydrateConfig = false) => {
+    const cfg = payload?.config || {}
+    const runtime = payload?.runtime || {}
+    setPaperRuntime(runtime)
+    setPaperSimRunning(Boolean(runtime?.running))
+    setPaperRecords(Array.isArray(payload?.records) ? payload.records : [])
+    setPaperLatestDecisionMap(payload?.latest_decision_map && typeof payload.latest_decision_map === 'object'
+      ? payload.latest_decision_map
+      : {})
+    setPaperPnlBaselineMap(payload?.pnl_baseline_map && typeof payload.pnl_baseline_map === 'object'
+      ? payload.pnl_baseline_map
+      : {})
+    setPaperStrategyHistory(Array.isArray(payload?.strategy_history) ? payload.strategy_history : [])
+
+    if (!hydrateConfig && paperSettingsHydratedRef.current) {
+      return
+    }
+
+    const symbol = String(cfg?.symbol || 'BTCUSDT').toUpperCase()
+    const normalizedSettings = normalizeTradeSettings({
+      positionSizingMode: String(cfg?.position_sizing_mode || 'margin_pct'),
+      highConfidenceAmount: Number(cfg?.high_confidence_amount ?? 0.01),
+      lowConfidenceAmount: Number(cfg?.low_confidence_amount ?? 0.005),
+      highConfidenceMarginPct: Number(cfg?.high_confidence_margin_pct ?? 5),
+      lowConfidenceMarginPct: Number(cfg?.low_confidence_margin_pct ?? 0),
+      leverage: Number(cfg?.leverage ?? 20),
+    })
+    const selection = parseStrategies(Array.isArray(cfg?.enabled_strategies) ? cfg.enabled_strategies : []).slice(0, 3)
+
+    setPaperPair(symbol || 'BTCUSDT')
+    setPaperMargin(normalizeDecimal(Number(cfg?.balance ?? 200), 0, 1_000_000_000))
+    setPaperSettings(normalizedSettings)
+    setPaperStrategySelection(selection)
+    setPaperStrategyDraft(selection)
+    setPaperStrategy(selection[0] || '')
+    paperStrategyManualRef.current = true
+
+    paperConfigHashRef.current = JSON.stringify(buildPaperConfigPayload({
+      symbol,
+      balance: Number(cfg?.balance ?? 200),
+      position_sizing_mode: normalizedSettings.positionSizingMode,
+      high_confidence_amount: normalizedSettings.highConfidenceAmount,
+      low_confidence_amount: normalizedSettings.lowConfidenceAmount,
+      high_confidence_margin_pct: normalizedSettings.highConfidenceMarginPct,
+      low_confidence_margin_pct: normalizedSettings.lowConfidenceMarginPct,
+      leverage: normalizedSettings.leverage,
+      enabled_strategies: selection,
+      interval_sec: Number(cfg?.interval_sec ?? runtime?.interval_sec ?? 8),
+    }))
+    paperSettingsHydratedRef.current = true
+  }, [buildPaperConfigPayload])
+
+  const loadPaperState = useCallback(async (silent = true, hydrateConfig = false) => {
+    try {
+      const res = await getPaperState({ limit: 2000 })
+      applyPaperState(res?.data || {}, hydrateConfig)
+    } catch (e) {
+      if (!silent) {
+        const reason = resolveRequestError(e, '加载模拟交易状态失败')
+        setError(reason)
+        showToast('error', `加载模拟交易状态失败：${reason}`)
+      }
+    }
+  }, [applyPaperState])
+
+  const syncPaperConfigToBackend = useCallback(async (silent = true, force = false) => {
+    if (!paperSettingsHydratedRef.current) return
+    const payload = buildPaperConfigPayload()
+    const hash = JSON.stringify(payload)
+    if (!force && hash === paperConfigHashRef.current) return
+    try {
+      const res = await updatePaperConfig(payload)
+      const cfg = res?.data?.config || payload
+      paperConfigHashRef.current = JSON.stringify(buildPaperConfigPayload(cfg))
+    } catch (e) {
+      if (!silent) {
+        const reason = resolveRequestError(e, '模拟配置保存失败')
+        setError(reason)
+        showToast('error', `模拟配置保存失败：${reason}`)
+      }
+    }
+  }, [buildPaperConfigPayload])
 
   const startPaperSim = async () => {
-    if (paperSimRunning) return
+    if (paperSimLoading) return
     setPaperSimLoading(true)
+    setError('')
     try {
-      paperConfigRef.current = {
-        pair: paperPair,
-        margin: paperMargin,
-        settings: { ...paperSettings },
-        strategies: [...paperStrategySelection],
-      }
-      setPaperSimRunning(true)
-      void runPaperSimStep(true)
-      paperSimTimerRef.current = setInterval(() => {
-        void runPaperSimStep(true)
-      }, 8000)
-      showToast('success', '模拟交易已开始（走 AI 决策链 dry-run，不会下真实订单）')
+      const payload = buildPaperConfigPayload()
+      await startPaperSimulation(payload)
+      paperConfigHashRef.current = JSON.stringify(payload)
+      await loadPaperState(true, false)
+      showToast('success', '模拟交易已开始（后台持续运行，关闭浏览器不会中断）')
     } catch (e) {
-      const reason = e?.message || '模拟执行失败'
+      const reason = resolveRequestError(e, '模拟启动失败')
+      setError(reason)
       showToast('error', `模拟启动失败：${reason}`)
-      setPaperSimRunning(false)
-      if (paperSimTimerRef.current) {
-        clearInterval(paperSimTimerRef.current)
-        paperSimTimerRef.current = null
-      }
     } finally {
       setPaperSimLoading(false)
     }
   }
 
-  const pausePaperSim = () => {
-    if (paperSimTimerRef.current) {
-      clearInterval(paperSimTimerRef.current)
-      paperSimTimerRef.current = null
+  const pausePaperSim = async () => {
+    if (paperSimLoading) return
+    setPaperSimLoading(true)
+    setError('')
+    try {
+      await stopPaperSimulation()
+      await loadPaperState(true, false)
+      showToast('warning', '模拟交易已暂停')
+    } catch (e) {
+      const reason = resolveRequestError(e, '模拟停止失败')
+      setError(reason)
+      showToast('error', `模拟停止失败：${reason}`)
+    } finally {
+      setPaperSimLoading(false)
     }
-    setPaperSimRunning(false)
-    showToast('warning', '模拟交易已暂停')
   }
 
-  const resetPaperCurrentPnL = useCallback(() => {
+  const resetPaperCurrentPnL = useCallback(async () => {
     const pair = String(paperPair || 'BTCUSDT').toUpperCase()
-    const currentPnL = paperTradeRecords
-      .filter((r) => !r?.symbol || String(r.symbol).toUpperCase() === pair)
-      .reduce((sum, row) => sum + Number(row?.unrealized_pnl || 0), 0)
-    setPaperPnlBaselineMap((prev) => ({ ...(prev || {}), [pair]: Number(currentPnL || 0) }))
-    showToast('success', `${pair} 当前盈亏已重置`)
-  }, [paperPair, paperTradeRecords])
-
-  useEffect(() => {
-    localStorage.setItem('paper-local-records', JSON.stringify(paperLocalRecords))
-  }, [paperLocalRecords])
-
-  useEffect(() => {
-    localStorage.setItem('paper-pnl-baseline-map', JSON.stringify(paperPnlBaselineMap || {}))
-  }, [paperPnlBaselineMap])
-
-  useEffect(() => {
-    paperConfigRef.current = {
-      pair: paperPair,
-      margin: paperMargin,
-      settings: { ...paperSettings },
-      strategies: [...paperStrategySelection],
+    try {
+      const res = await resetPaperPnL({ symbol: pair })
+      setPaperPnlBaselineMap(res?.data?.pnl_baseline_map && typeof res.data.pnl_baseline_map === 'object'
+        ? res.data.pnl_baseline_map
+        : {})
+      showToast('success', `${pair} 当前盈亏已重置`)
+    } catch (e) {
+      const reason = resolveRequestError(e, '重置当前盈亏失败')
+      setError(reason)
+      showToast('error', `重置失败：${reason}`)
     }
-  }, [paperPair, paperMargin, paperSettings, paperStrategySelection])
+  }, [paperPair])
 
-  useEffect(() => () => {
-    if (paperSimTimerRef.current) {
-      clearInterval(paperSimTimerRef.current)
-      paperSimTimerRef.current = null
+  useEffect(() => {
+    if (!paperSettingsHydratedRef.current) return
+    if (paperConfigSyncTimerRef.current) {
+      clearTimeout(paperConfigSyncTimerRef.current)
     }
-  }, [])
+    paperConfigSyncTimerRef.current = setTimeout(() => {
+      void syncPaperConfigToBackend(true, false)
+    }, 450)
+    return () => {
+      if (paperConfigSyncTimerRef.current) {
+        clearTimeout(paperConfigSyncTimerRef.current)
+        paperConfigSyncTimerRef.current = null
+      }
+    }
+  }, [paperPair, paperMargin, paperSettings, paperStrategySelection, syncPaperConfigToBackend])
+
+  useEffect(() => {
+    const interval = paperSimRunning ? 5000 : 15000
+    const timer = setInterval(() => {
+      void loadPaperState(true, false)
+    }, interval)
+    return () => clearInterval(timer)
+  }, [paperSimRunning, loadPaperState])
+
+  useEffect(() => {
+    if (menu !== 'paper') return
+    void loadPaperState(true, false)
+  }, [menu, loadPaperState])
 
   useEffect(() => {
     setStrategyDraft(enabledStrategies)
@@ -951,38 +900,7 @@ export function useDashboardController() {
   }, [btStrategySelection])
 
   useEffect(() => {
-    const normalized = parseStrategies(enabledStrategies).slice(0, 3)
-    if (!normalized.length) return
-    const key = strategyListKey(normalized)
-    if (liveHistoryKeyRef.current === key) return
-    liveHistoryKeyRef.current = key
-    setLiveStrategyHistory((prev) => pushStrategyHistory(
-      prev,
-      normalized,
-      'live',
-      strategyMetaMap,
-      buildLiveParamSnapshot(status, settings),
-    ))
-  }, [enabledStrategies, strategyMetaMap, status, settings])
-
-  useEffect(() => {
-    const normalized = parseStrategies(paperStrategySelection).slice(0, 3)
-    if (!normalized.length) return
-    const key = strategyListKey(normalized)
-    if (paperHistoryKeyRef.current === key) return
-    paperHistoryKeyRef.current = key
-    setPaperStrategyHistory((prev) => pushStrategyHistory(
-      prev,
-      normalized,
-      'paper',
-      strategyMetaMap,
-      buildPaperParamSnapshot(paperSettings),
-    ))
-  }, [paperStrategySelection, strategyMetaMap, paperSettings])
-
-  useEffect(() => {
     if (!Object.keys(strategyMetaMap || {}).length) return
-    setLiveStrategyHistory((prev) => patchStrategyHistoryMeta(prev, strategyMetaMap))
     setPaperStrategyHistory((prev) => patchStrategyHistoryMeta(prev, strategyMetaMap))
   }, [strategyMetaMap])
 
@@ -1136,6 +1054,7 @@ export function useDashboardController() {
   useEffect(() => {
     refreshCore(false)
     loadSystemAndStrategies()
+    void loadPaperState(true, true)
     const timer = setInterval(() => refreshCore(true), 15000)
     return () => clearInterval(timer)
   }, [])
@@ -1658,13 +1577,18 @@ export function useDashboardController() {
   }, [strategyScores])
 
   const strategyDurationText = useMemo(() => {
-    const diff = Math.max(0, Date.now() - liveStrategyStartedAt)
+    const startedAtRaw = String(status?.live_strategy_started_at || '').trim()
+    const startedAtMs = Date.parse(startedAtRaw)
+    if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) {
+      return '0m'
+    }
+    const diff = Math.max(0, Date.now() - startedAtMs)
     const mins = Math.floor(diff / 60000)
     const hours = Math.floor(mins / 60)
     const rem = mins % 60
     if (hours > 0) return `${hours}h ${rem}m`
     return `${mins}m`
-  }, [liveStrategyStartedAt, status?.runtime?.last_run_at])
+  }, [status?.live_strategy_started_at, status?.runtime?.last_run_at])
 
   const persistLiveConfigSettings = async () => {
     const normalizedSettings = normalizeTradeSettings(settings)
@@ -1697,7 +1621,6 @@ export function useDashboardController() {
       setSystemSettings((old) => ({ ...(old || {}), AI_EXECUTION_STRATEGIES: nextEnabledValue }))
     }
     liveSettingsDirtyRef.current = false
-    setLiveStrategyStartedAt(Date.now())
     activePairHydratedRef.current = true
     activePairUserOverrideRef.current = false
   }
@@ -2132,7 +2055,6 @@ export function useDashboardController() {
       setStrategyDraft(nextEnabled)
       if (!nextEnabled.includes(activeStrategy)) {
         setActiveStrategy(nextEnabled[0])
-        setLiveStrategyStartedAt(Date.now())
       }
       if (!paperStrategyManualRef.current) {
         setPaperStrategySelection((old) => (sameStrategyList(old, nextEnabled) ? old : nextEnabled))
@@ -2353,12 +2275,10 @@ export function useDashboardController() {
     }
     const prevEnabled = [...enabledStrategies]
     const prevActive = activeStrategy
-    const prevLiveStrategyStartedAt = liveStrategyStartedAt
     const prevSystemSettings = { ...(systemSettings || {}) }
     setEnabledStrategies(next)
     if (next.length && !next.includes(activeStrategy)) {
       setActiveStrategy(next[0])
-      setLiveStrategyStartedAt(Date.now())
     }
     setSystemSettings((old) => mergeSystemDefaults({
       ...(old || {}),
@@ -2373,7 +2293,6 @@ export function useDashboardController() {
       setEnabledStrategies(prevEnabled)
       setStrategyDraft(prevEnabled)
       setActiveStrategy(prevActive)
-      setLiveStrategyStartedAt(prevLiveStrategyStartedAt)
       setSystemSettings(mergeSystemDefaults(prevSystemSettings))
       const reason = e?.response?.data?.error || e?.message || '策略保存失败'
       setError(reason)
@@ -2387,12 +2306,6 @@ export function useDashboardController() {
     paperStrategyManualRef.current = true
     setPaperStrategySelection(next)
     setPaperStrategy(next[0] || '')
-    paperConfigRef.current = {
-      pair: paperPair,
-      margin: paperMargin,
-      settings: { ...paperSettings },
-      strategies: [...next],
-    }
     setPaperStrategyPickerOpen(false)
   }
 

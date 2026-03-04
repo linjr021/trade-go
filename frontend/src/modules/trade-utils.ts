@@ -39,27 +39,6 @@ export function sleep(ms) {
   })
 }
 
-export function loadPaperLocalRecords() {
-  try {
-    const raw = localStorage.getItem('paper-local-records')
-    if (!raw) return []
-    const arr = JSON.parse(raw)
-    if (!Array.isArray(arr)) return []
-    return arr.filter((r) => r && typeof r === 'object')
-  } catch {
-    return []
-  }
-}
-
-export function calcPaperPnL(signal, lastPrice, currentPrice, size) {
-  const qty = Number(size || 0)
-  if (qty <= 0 || lastPrice <= 0 || currentPrice <= 0) return 0
-  const side = String(signal || '').toUpperCase()
-  if (side === 'BUY') return (currentPrice - lastPrice) * qty
-  if (side === 'SELL') return (lastPrice - currentPrice) * qty
-  return 0
-}
-
 export function resolveRequestError(e, fallback = '请求失败') {
   const apiError = String(e?.response?.data?.error || '').trim()
   if (apiError) return apiError

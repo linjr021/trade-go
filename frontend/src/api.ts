@@ -53,3 +53,9 @@ export const startScheduler = () => http.post('/scheduler/start')
 export const stopScheduler = () => http.post('/scheduler/stop')
 export const runPaperSimulateStep = (payload: Record<string, any>) =>
   http.post('/paper/simulate-step', payload, { timeout: 90000 })
+export const getPaperState = (params: Record<string, any> = {}) => http.get('/paper/state', { params })
+export const updatePaperConfig = (payload: Record<string, any>) => http.post('/paper/config', payload)
+export const startPaperSimulation = (payload: Record<string, any> = {}) =>
+  http.post('/paper/start', payload, { timeout: 90000 })
+export const stopPaperSimulation = () => http.post('/paper/stop')
+export const resetPaperPnL = (payload: Record<string, any> = {}) => http.post('/paper/reset-pnl', payload)

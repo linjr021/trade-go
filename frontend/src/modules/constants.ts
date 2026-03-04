@@ -76,7 +76,7 @@ export const AUTO_REVIEW_ENV_KEYS = [
 export const envFieldDefs = envFieldGroups.flatMap((group) => group.fields)
 
 export const systemSettingDefaults = {
-  PRODUCT_NAME: '21xG交易',
+  PRODUCT_NAME: '21xG',
   AI_EXECUTION_STRATEGIES: '',
   AUTO_REVIEW_ENABLED: 'true',
   AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',

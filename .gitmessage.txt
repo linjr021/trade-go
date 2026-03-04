@@ -1,0 +1,21 @@
+# type(scope): summary
+#
+# type:
+#   feat | fix | refactor | chore | docs | style | test
+#
+# scope:
+#   frontend | backend | trader | server | deploy | docs ...
+#
+# 示例:
+#   feat(frontend): add strategy history panel
+#   fix(server): handle binance timeout fallback
+#
+# 变更说明（可选）:
+# - 
+#
+# 验证（可选）:
+# - go test ./...
+# - cd frontend && npm run check
+#
+# 风险与回滚（可选）:
+# - 

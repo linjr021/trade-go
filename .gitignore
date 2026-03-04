@@ -8,6 +8,7 @@
 # editor
 *.swp
 *.swo
+.vscode/
 
 # logs
 *.log

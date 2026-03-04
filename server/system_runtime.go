@@ -21,8 +21,10 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 	restartCount := s.restartCount
 	schedulerRunning := s.schedulerRunning
 	realtimeRunning := s.realtimeLoopRunning
+	paperRunning := s.paperState.Running
 	triggerMode := strings.TrimSpace(s.triggerMode)
 	nextRunAt := s.nextRunAt
+	paperNextRunAt := s.paperState.NextRunAt
 	s.mu.RUnlock()
 	if triggerMode == "" {
 		triggerMode = "idle"
@@ -122,6 +124,11 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 				"message": schedulerMessage,
 			},
 			{
+				"name":    "模拟交易调度",
+				"status":  boolStatus(paperRunning, "running", "stopped"),
+				"message": boolStatus(paperRunning, "已启动", "未启动"),
+			},
+			{
 				"name":    "SQLite",
 				"status":  boolStatus(s.bot.HasStore(), "connected", "disabled"),
 				"message": boolStatus(s.bot.HasStore(), "持久化已启用", "持久化未启用"),
@@ -175,6 +182,10 @@ func (s *Service) handleSystemRuntimeStatus(w http.ResponseWriter, r *http.Reque
 			"engine_on":   engineRunning,
 			"realtime_on": realtimeRunning,
 			"next_run_at": nextRunAt,
+			"paper": map[string]any{
+				"running":     paperRunning,
+				"next_run_at": paperNextRunAt,
+			},
 		},
 	})
 }

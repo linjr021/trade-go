@@ -109,12 +109,10 @@ func (r *Runner) runWeb() error {
 		}
 	}
 	svc := server.NewService(r.bot)
-	if wsEnabled {
-		svc.SetRealtimeLoopRunning(true)
-		go r.runRealtimeStrategyLoop(svc)
-	} else {
-		svc.StartScheduler()
-	}
+	// Default-off runtime: live scheduler/realtime loop is started manually from UI/API.
+	// This prevents service restart from immediately resuming real trading.
+	svc.SetRealtimeLoopRunning(false)
+	fmt.Println("实盘调度默认关闭，请在前端点击“开始”后执行")
 	fmt.Printf("运行模式: %s\n", ModeWeb)
 	return server.Serve(addr, svc)
 }

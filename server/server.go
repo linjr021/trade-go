@@ -32,17 +32,24 @@ type Service struct {
 	lastAutoStrategyRegenAt     time.Time
 	nextAutoStrategyRegenAt     time.Time
 	lastAutoStrategyRegenReason string
+
+	paperCancel context.CancelFunc
+	paperState  paperRuntimeState
+	liveState   liveRuntimeState
 }
 
 func NewService(bot *trader.Bot) *Service {
 	applySkillWorkflowPromptsToEnv(loadSkillWorkflowConfig())
 	ai.SetUsageRecorder(recordLLMUsageWithMeta)
-	return &Service{
+	svc := &Service{
 		bot:                         bot,
 		startedAt:                   time.Now(),
 		triggerMode:                 "idle",
 		lastAutoStrategyRegenReason: "等待自动重生成触发",
 	}
+	svc.initLiveRuntime()
+	svc.initPaperRuntime()
+	return svc
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
@@ -87,6 +94,11 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/scheduler/start", s.handleStartScheduler)
 	mux.HandleFunc("/api/scheduler/stop", s.handleStopScheduler)
 	mux.HandleFunc("/api/paper/simulate-step", s.handlePaperSimulateStep)
+	mux.HandleFunc("/api/paper/state", s.handlePaperState)
+	mux.HandleFunc("/api/paper/config", s.handlePaperConfig)
+	mux.HandleFunc("/api/paper/start", s.handlePaperStart)
+	mux.HandleFunc("/api/paper/stop", s.handlePaperStop)
+	mux.HandleFunc("/api/paper/reset-pnl", s.handlePaperResetPnL)
 }
 
 func (s *Service) StartScheduler() {
@@ -174,6 +186,7 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.bot.Snapshot()
 	cfg := s.bot.TradeConfig()
 	enabledStrategies := parseEnabledStrategiesEnv("")
+	s.syncLiveRuntime(enabledStrategies, cfg)
 	activeStrategy := ""
 	if len(enabledStrategies) > 0 {
 		activeStrategy = enabledStrategies[0]
@@ -198,6 +211,10 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"next_at":     s.nextAutoStrategyRegenAt,
 			"last_reason": s.lastAutoStrategyRegenReason,
 		},
+		"paper_runtime":            s.paperRuntimeSummaryLocked(),
+		"live_strategy_history":    s.liveState.StrategyHistory,
+		"live_strategy_started_at": s.liveState.ActiveSince,
+		"live_active_strategies":   s.liveState.ActiveStrategies,
 	}
 	if hasOrderPreview {
 		resp["next_order_preview"] = nextOrderPreview
