@@ -6,6 +6,10 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SKIP_DOCKER_INSTALL="false"
 NO_BUILD="false"
+WITH_TUNNEL="auto"
+ENABLE_TUNNEL="false"
+BACKEND_PORT_EFFECTIVE="8080"
+FRONTEND_PORT_EFFECTIVE="5173"
 
 log() {
   echo "[deploy-docker] $*"
@@ -29,11 +33,14 @@ usage() {
   --project-dir <dir>       项目目录（默认: 脚本上级目录）
   --skip-docker-install     跳过 Docker/Compose 安装，仅执行部署
   --no-build                启动时不强制 --build
+  --with-tunnel             启用 cloudflared（要求配置 CF_TUNNEL_TOKEN）
+  --without-tunnel          强制不启用 cloudflared
   -h, --help                查看帮助
 
 示例:
   sudo bash scripts/deploy_docker.sh
   sudo bash scripts/deploy_docker.sh --project-dir /opt/trade-go --no-build
+  sudo bash scripts/deploy_docker.sh --with-tunnel
 EOF
 }
 
@@ -50,6 +57,12 @@ parse_args() {
         ;;
       --no-build)
         NO_BUILD="true"
+        ;;
+      --with-tunnel)
+        WITH_TUNNEL="true"
+        ;;
+      --without-tunnel)
+        WITH_TUNNEL="false"
         ;;
       -h|--help)
         usage
@@ -207,11 +220,69 @@ prepare_project() {
   fi
 }
 
+env_file_value() {
+  local key="$1"
+  local file="${2:-.env}"
+  [[ -f "${file}" ]] || return 0
+  local line
+  line="$(grep -E "^[[:space:]]*${key}=" "${file}" | tail -n1 || true)"
+  line="${line#*=}"
+  line="${line%\"}"
+  line="${line#\"}"
+  line="${line%\'}"
+  line="${line#\'}"
+  echo -n "${line}"
+}
+
+resolve_runtime_options() {
+  local token_from_env="${CF_TUNNEL_TOKEN:-}"
+  local token_from_file
+  token_from_file="$(env_file_value CF_TUNNEL_TOKEN .env)"
+  local token="${token_from_env:-${token_from_file}}"
+
+  local frontend_from_env="${FRONTEND_PORT:-}"
+  local frontend_from_file
+  frontend_from_file="$(env_file_value FRONTEND_PORT .env)"
+  FRONTEND_PORT_EFFECTIVE="${frontend_from_env:-${frontend_from_file:-5173}}"
+
+  local backend_from_env="${BACKEND_PORT:-}"
+  local backend_from_file
+  backend_from_file="$(env_file_value BACKEND_PORT .env)"
+  BACKEND_PORT_EFFECTIVE="${backend_from_env:-${backend_from_file:-8080}}"
+
+  case "${WITH_TUNNEL}" in
+    true)
+      ENABLE_TUNNEL="true"
+      ;;
+    false)
+      ENABLE_TUNNEL="false"
+      ;;
+    auto)
+      if [[ -n "${token}" ]]; then
+        ENABLE_TUNNEL="true"
+      else
+        ENABLE_TUNNEL="false"
+      fi
+      ;;
+    *)
+      die "WITH_TUNNEL 参数非法: ${WITH_TUNNEL}"
+      ;;
+  esac
+
+  if [[ "${ENABLE_TUNNEL}" == "true" && -z "${token}" ]]; then
+    die "已启用 cloudflared，但未检测到 CF_TUNNEL_TOKEN（请在 .env 中配置）"
+  fi
+}
+
 deploy_compose() {
+  local compose_args=()
+  if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
+    compose_args+=(--profile tunnel)
+  fi
   if [[ "${NO_BUILD}" == "true" ]]; then
-    docker compose up -d
+    docker compose "${compose_args[@]}" up -d
   else
-    docker compose up -d --build
+    docker compose "${compose_args[@]}" up -d --build
   fi
 }
 
@@ -231,14 +302,20 @@ main() {
   start_docker_service
   grant_docker_group
   prepare_project
+  resolve_runtime_options
 
   log "启动 Docker Compose 服务..."
+  if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
+    log "cloudflared: 已启用（profile=tunnel）"
+  else
+    log "cloudflared: 未启用（可通过 --with-tunnel 或配置 CF_TUNNEL_TOKEN 启用）"
+  fi
   deploy_compose
 
   log "部署完成。"
-  log "前端: http://localhost:5173"
-  log "后端: http://localhost:8080"
-  log "状态检查: curl http://localhost:8080/api/status"
+  log "前端: http://localhost:${FRONTEND_PORT_EFFECTIVE}"
+  log "后端: http://localhost:${BACKEND_PORT_EFFECTIVE}"
+  log "状态检查: curl http://localhost:${BACKEND_PORT_EFFECTIVE}/api/status"
 }
 
 main "$@"

@@ -152,15 +152,21 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+如果要同时启动 Cloudflare Tunnel（`cloudflared`）：
+
+```bash
+docker compose --profile tunnel up -d --build
+```
+
 启动后访问：
 
-- 前端：`http://localhost:5173`
-- 后端 API：`http://localhost:8080`
+- 前端：`http://localhost:${FRONTEND_PORT}`（默认 `5173`）
+- 后端 API：`http://localhost:${BACKEND_PORT}`（默认 `8080`）
 
 可快速检查：
 
 ```bash
-curl http://localhost:8080/api/status
+curl http://localhost:${BACKEND_PORT:-8080}/api/status
 ```
 
 ### 6.4 常用运维命令
@@ -169,10 +175,12 @@ curl http://localhost:8080/api/status
 # 查看日志
 docker compose logs -f backend
 docker compose logs -f frontend
+docker compose logs -f cloudflared
 
 # 重启
 docker compose restart backend
 docker compose restart frontend
+docker compose restart cloudflared
 
 # 停止并删除容器
 docker compose down
@@ -203,6 +211,7 @@ sudo bash scripts/deploy_docker.sh
 - 启动并拉起 Docker 服务
 - 自动初始化 `.env`（若缺失则从 `.env.example` 复制）
 - 启动 `docker compose up -d --build`
+- 若检测到 `CF_TUNNEL_TOKEN`，会自动启用 `cloudflared`（等价于 `--profile tunnel`）
 
 可选参数：
 
@@ -215,6 +224,10 @@ sudo bash scripts/deploy_docker.sh \
 
 # 已自行安装 Docker 时可跳过安装检测
 sudo bash scripts/deploy_docker.sh --skip-docker-install
+
+# 强制启用/关闭 Cloudflare Tunnel
+sudo bash scripts/deploy_docker.sh --with-tunnel
+sudo bash scripts/deploy_docker.sh --without-tunnel
 ```
 
 注意：
@@ -222,6 +235,55 @@ sudo bash scripts/deploy_docker.sh --skip-docker-install
 - 该脚本面向 Linux 服务器。
 - 首次执行会尝试将当前 sudo 用户加入 `docker` 用户组，重新登录后可免 sudo 使用 docker 命令。
 - 若自动安装失败，可手动安装 Docker 后再执行 `--skip-docker-install`。
+
+### 6.6 Cloudflare Tunnel（容器方式）
+
+1. 在 Cloudflare Zero Trust 创建 Tunnel，并获取 `CF_TUNNEL_TOKEN`。
+2. 在 `.env` 中填写：
+
+```bash
+CF_TUNNEL_TOKEN=your_tunnel_token
+```
+
+3. 启动（任选其一）：
+
+```bash
+# 手动启用 tunnel profile
+docker compose --profile tunnel up -d --build
+
+# 或一键脚本自动检测 token 并启用
+sudo bash scripts/deploy_docker.sh
+```
+
+4. 在 Cloudflare Tunnel 的 Public Hostname 中，将服务指向：
+
+- 前端：`http://frontend:80`
+- 或后端 API：`http://backend:8080`
+
+说明：
+
+- `cloudflared` 运行在同一 Compose 网络中，使用服务名 `frontend` / `backend` 互通。
+- 同机多实例时，每个实例建议使用独立 Tunnel Token。
+
+### 6.7 同机部署多个 trade-go 实例
+
+每个实例建议独立目录，并至少配置以下参数避免冲突：
+
+```bash
+COMPOSE_PROJECT_NAME=trade-go-a
+BACKEND_PORT=8080
+FRONTEND_PORT=5173
+CF_TUNNEL_TOKEN=...
+```
+
+第二个实例示例：
+
+```bash
+COMPOSE_PROJECT_NAME=trade-go-b
+BACKEND_PORT=8180
+FRONTEND_PORT=5273
+CF_TUNNEL_TOKEN=...
+```
 
 ## 7. Linux 一键安装脚本（systemd + nginx）
 
@@ -281,10 +343,17 @@ journalctl -u trade-go-backend -f
 
 ### 8.1 基础运行
 
+- `COMPOSE_PROJECT_NAME`：Compose 项目名（多实例隔离用）
+- `BACKEND_PORT`：宿主机后端端口（默认 `8080`）
+- `FRONTEND_PORT`：宿主机前端端口（默认 `5173`）
 - `PRODUCT_NAME`：产品名（前端展示）
 - `MODE`：`web` / `cli`
 - `HTTP_ADDR`：后端地址，默认 `:8080`
 - `TRADE_DB_PATH`：SQLite 路径，默认 `data/trade.db`
+
+### 8.1.1 Cloudflare Tunnel（可选）
+
+- `CF_TUNNEL_TOKEN`：Cloudflare Tunnel 运行 token（启用 `cloudflared` 必填）
 
 ### 8.2 AI（智能体）
 

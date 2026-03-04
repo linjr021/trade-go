@@ -14,7 +14,7 @@ services:
       - ./data:/app/data
       - ./.env:/app/.env
     ports:
-      - "8080:8080"
+      - "${BACKEND_PORT:-8080}:8080"
 
   frontend:
     build:
@@ -24,4 +24,13 @@ services:
     depends_on:
       - backend
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    profiles:
+      - tunnel
