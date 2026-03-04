@@ -351,6 +351,7 @@ journalctl -u trade-go-backend -f
 - `COMPOSE_PROJECT_NAME`：Compose 项目名（多实例隔离用）
 - `BACKEND_PORT`：宿主机后端端口（默认 `8080`）
 - `FRONTEND_PORT`：宿主机前端端口（默认 `5173`）
+- `APP_UID` / `APP_GID`：容器内后端进程 UID/GID（默认 `1000`，用于自动修复 `data/.env` 挂载权限）
 - `GO_PROXY`：后端镜像构建 Go 模块代理（默认 `https://proxy.golang.org,direct`）
 - `GO_SUMDB`：后端镜像构建 Go 校验库（默认 `sum.golang.org`）
 - `NPM_REGISTRY`：前端镜像构建 npm 源（默认 `https://registry.npmjs.org`）

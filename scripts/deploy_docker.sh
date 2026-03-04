@@ -10,6 +10,8 @@ WITH_TUNNEL="auto"
 ENABLE_TUNNEL="false"
 BACKEND_PORT_EFFECTIVE="8080"
 FRONTEND_PORT_EFFECTIVE="5173"
+APP_UID_EFFECTIVE="1000"
+APP_GID_EFFECTIVE="1000"
 
 log() {
   echo "[deploy-docker] $*"
@@ -255,6 +257,16 @@ resolve_runtime_options() {
   backend_from_file="$(env_file_value BACKEND_PORT .env)"
   BACKEND_PORT_EFFECTIVE="${backend_from_env:-${backend_from_file:-8080}}"
 
+  local app_uid_from_env="${APP_UID:-}"
+  local app_uid_from_file
+  app_uid_from_file="$(env_file_value APP_UID .env)"
+  APP_UID_EFFECTIVE="${app_uid_from_env:-${app_uid_from_file:-1000}}"
+
+  local app_gid_from_env="${APP_GID:-}"
+  local app_gid_from_file
+  app_gid_from_file="$(env_file_value APP_GID .env)"
+  APP_GID_EFFECTIVE="${app_gid_from_env:-${app_gid_from_file:-1000}}"
+
   case "${WITH_TUNNEL}" in
     true)
       ENABLE_TUNNEL="true"
@@ -292,6 +304,19 @@ resolve_runtime_options() {
   fi
 }
 
+fix_runtime_permissions() {
+  cd "${PROJECT_DIR}"
+  mkdir -p data logs
+
+  chown -R "${APP_UID_EFFECTIVE}:${APP_GID_EFFECTIVE}" data logs || warn "设置 data/logs 权限失败"
+  chmod -R u+rwX,g+rwX data logs || true
+
+  if [[ -f ".env" ]]; then
+    chown "${APP_UID_EFFECTIVE}:${APP_GID_EFFECTIVE}" .env || warn "设置 .env 所有者失败"
+    chmod u+rw,g+rw .env || true
+  fi
+}
+
 deploy_compose() {
   local compose_args=()
   if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
@@ -321,6 +346,7 @@ main() {
   grant_docker_group
   prepare_project
   resolve_runtime_options
+  fix_runtime_permissions
 
   log "启动 Docker Compose 服务..."
   if [[ "${ENABLE_TUNNEL}" == "true" ]]; then
