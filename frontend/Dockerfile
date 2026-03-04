@@ -1,7 +1,9 @@
 FROM node:20-alpine AS builder
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /src
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm config set registry "${NPM_REGISTRY}" \
+  && npm ci --no-audit --prefer-offline
 COPY frontend/ ./
 RUN npm run build
 

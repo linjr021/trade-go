@@ -137,6 +137,7 @@ trade-go/
 
 - Docker 24+
 - Docker Compose v2+
+- 中国服务器建议在 `.env` 配置构建代理（`GO_PROXY` / `GO_SUMDB` / `NPM_REGISTRY`）
 
 ### 6.2 初始化环境变量
 
@@ -190,6 +191,10 @@ docker compose down
 
 - `docker-compose.yml` 已将 `./data` 挂载到容器内 `/app/data`，用于持久化数据库与策略文件。
 - `./.env` 已挂载到后端容器 `/app/.env`，前端“系统设置”修改环境变量后会回写到该文件。
+- 构建阶段会读取以下变量（中国网络可显著降低超时概率）：
+  - `GO_PROXY`（默认 `https://goproxy.cn,direct`）
+  - `GO_SUMDB`（默认 `sum.golang.google.cn`）
+  - `NPM_REGISTRY`（默认 `https://registry.npmmirror.com`）
 
 ### 6.5 Linux 一键 Docker 部署脚本（自动安装 Docker/Compose）
 
@@ -346,6 +351,9 @@ journalctl -u trade-go-backend -f
 - `COMPOSE_PROJECT_NAME`：Compose 项目名（多实例隔离用）
 - `BACKEND_PORT`：宿主机后端端口（默认 `8080`）
 - `FRONTEND_PORT`：宿主机前端端口（默认 `5173`）
+- `GO_PROXY`：后端镜像构建 Go 模块代理（默认 `https://goproxy.cn,direct`）
+- `GO_SUMDB`：后端镜像构建 Go 校验库（默认 `sum.golang.google.cn`）
+- `NPM_REGISTRY`：前端镜像构建 npm 源（默认 `https://registry.npmmirror.com`）
 - `PRODUCT_NAME`：产品名（前端展示）
 - `MODE`：`web` / `cli`
 - `HTTP_ADDR`：后端地址，默认 `:8080`

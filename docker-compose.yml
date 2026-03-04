@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        GOPROXY: "${GO_PROXY:-https://goproxy.cn,direct}"
+        GOSUMDB: "${GO_SUMDB:-sum.golang.google.cn}"
     restart: unless-stopped
     env_file:
       - .env
@@ -20,6 +23,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmmirror.com}"
     restart: unless-stopped
     depends_on:
       - backend
