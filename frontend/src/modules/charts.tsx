@@ -1295,19 +1295,46 @@ export function AssetTrendChart({ points, range = '30D' }) {
     .sort((a, b) => a.tsMs - b.tsMs)
   if (!parsedPoints.length) return <p className="muted">暂无资产趋势数据</p>
 
+  const firstPositiveTs = parsedPoints.find((p) => p.equity > 0)?.tsMs
   const inWindow = parsedPoints.filter((p) => p.tsMs >= startTime && p.tsMs <= endTime)
   let safePoints = inWindow
   if (!safePoints.length) {
-    const latest = parsedPoints[parsedPoints.length - 1]
-    safePoints = latest ? [latest] : []
+    // 区间内无资产数据时，显示 0 资金平线，避免错误继承历史资产值。
+    safePoints = [
+      { ts: new Date(startTime).toISOString(), tsMs: startTime, equity: 0 },
+      { ts: new Date(endTime).toISOString(), tsMs: endTime, equity: 0 },
+    ]
   }
   if (!safePoints.length) return <p className="muted">暂无资产趋势数据</p>
   if (safePoints[0].tsMs > startTime) {
     safePoints = [
-      { ...safePoints[0], ts: new Date(startTime).toISOString(), tsMs: startTime },
+      // 区间起始到首条资产数据之间，按“无资产=0”处理。
+      { ts: new Date(startTime).toISOString(), tsMs: startTime, equity: 0 },
       ...safePoints,
     ]
   }
+
+  if (!Number.isFinite(firstPositiveTs)) {
+    // 从未出现过正资产，整段都按 0 显示。
+    safePoints = safePoints.map((p) => ({ ...p, equity: 0 }))
+  } else {
+    // 在“首个正资产时间”之前，强制资产为 0。
+    safePoints = safePoints.map((p) => (
+      p.tsMs < firstPositiveTs ? { ...p, equity: 0 } : p
+    ))
+
+    // 若当前窗口覆盖首个正资产时刻，插入同时间零值锚点，避免 0->正资产斜线误导。
+    if (startTime < firstPositiveTs && endTime >= firstPositiveTs) {
+      const hasZeroAnchor = safePoints.some((p) => p.tsMs === firstPositiveTs && p.equity === 0)
+      if (!hasZeroAnchor) {
+        const idx = safePoints.findIndex((p) => p.tsMs >= firstPositiveTs)
+        const zeroAnchor = { ts: new Date(firstPositiveTs).toISOString(), tsMs: firstPositiveTs, equity: 0 }
+        if (idx === -1) safePoints.push(zeroAnchor)
+        else safePoints.splice(idx, 0, zeroAnchor)
+      }
+    }
+  }
+
   if (safePoints[safePoints.length - 1].tsMs < endTime) {
     const last = safePoints[safePoints.length - 1]
     safePoints = [
@@ -1360,11 +1387,23 @@ export function AssetTrendChart({ points, range = '30D' }) {
     }
     return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
   }
-  const linePath = safePoints
-    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p.equity)}`)
-    .join(' ')
+  // 资产曲线使用“阶梯线”，避免在无资产到首笔入金之间出现误导性的斜线。
+  let linePath = `M ${x(0)} ${y(safePoints[0]?.equity || 0)}`
+  for (let i = 1; i < safePoints.length; i += 1) {
+    const xi = x(i)
+    const prevY = y(safePoints[i - 1]?.equity || 0)
+    const yi = y(safePoints[i]?.equity || 0)
+    linePath += ` L ${xi} ${prevY} L ${xi} ${yi}`
+  }
   const areaBaseY = y(0)
-  const areaPath = `${linePath} L ${x(safePoints.length - 1)} ${areaBaseY} L ${x(0)} ${areaBaseY} Z`
+  let areaPath = `M ${x(0)} ${areaBaseY} L ${x(0)} ${y(safePoints[0]?.equity || 0)}`
+  for (let i = 1; i < safePoints.length; i += 1) {
+    const xi = x(i)
+    const prevY = y(safePoints[i - 1]?.equity || 0)
+    const yi = y(safePoints[i]?.equity || 0)
+    areaPath += ` L ${xi} ${prevY} L ${xi} ${yi}`
+  }
+  areaPath += ` L ${x(safePoints.length - 1)} ${areaBaseY} Z`
   const firstEquity = safePoints[0]?.equity || 0
   const lastEquity = safePoints[safePoints.length - 1]?.equity || 0
   const delta = lastEquity - firstEquity
@@ -1378,24 +1417,28 @@ export function AssetTrendChart({ points, range = '30D' }) {
       value,
     }
   })
-  const xTickIndexes = (() => {
-    if (safePoints.length <= 1) return [0]
-    const maxTicks = 6
-    const stepIdx = Math.max(1, Math.floor((safePoints.length - 1) / (maxTicks - 1)))
-    const idxs = []
-    for (let i = 0; i < safePoints.length; i += stepIdx) idxs.push(i)
-    if (idxs[idxs.length - 1] !== safePoints.length - 1) idxs.push(safePoints.length - 1)
-    return Array.from(new Set(idxs))
-  })()
-  const xTicks = xTickIndexes.map((idx) => {
-    const ratio = safePoints.length > 1 ? (idx / (safePoints.length - 1)) : 1
-    const tickTs = new Date(startTime + windowMs * ratio)
-    return {
-      key: `x-${idx}`,
-      x: x(idx),
-      label: fmtXAxisTime(tickTs),
+  const xTicks = (() => {
+    const maxTicks = String(range) === '1Y' ? 5 : 6
+    if (maxTicks <= 1) {
+      return [{
+        key: 'x-0',
+        x: left,
+        label: fmtXAxisTime(new Date(startTime)),
+      }]
     }
-  })
+    const out = []
+    for (let i = 0; i < maxTicks; i += 1) {
+      const ratio = i / (maxTicks - 1)
+      const tickTsMs = startTime + windowMs * ratio
+      out.push({
+        key: `x-${i}`,
+        // X 轴按时间等分，避免数据集中时标签挤在一起重叠。
+        x: left + innerW * ratio,
+        label: fmtXAxisTime(new Date(tickTsMs)),
+      })
+    }
+    return out
+  })()
 
   return (
     <div className="asset-trend-shell">
