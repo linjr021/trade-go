@@ -195,6 +195,7 @@ docker compose down
   - `GO_PROXY`（默认 `https://goproxy.cn,direct`）
   - `GO_SUMDB`（默认 `sum.golang.google.cn`）
   - `NPM_REGISTRY`（默认 `https://registry.npmmirror.com`）
+  - `ALPINE_MIRROR`（默认 `mirrors.aliyun.com`，用于后端运行镜像 `apk add`）
 
 ### 6.5 Linux 一键 Docker 部署脚本（自动安装 Docker/Compose）
 
@@ -247,6 +248,7 @@ sudo bash scripts/deploy_docker.sh --without-tunnel
 2. 在 `.env` 中填写：
 
 ```bash
+CF_TUNNEL_ENABLED=auto
 CF_TUNNEL_TOKEN=your_tunnel_token
 ```
 
@@ -361,6 +363,7 @@ journalctl -u trade-go-backend -f
 
 ### 8.1.1 Cloudflare Tunnel（可选）
 
+- `CF_TUNNEL_ENABLED`：`auto/true/false`（默认 `auto`，`auto`=有 token 则启用）
 - `CF_TUNNEL_TOKEN`：Cloudflare Tunnel 运行 token（启用 `cloudflared` 必填）
 
 ### 8.2 AI（智能体）

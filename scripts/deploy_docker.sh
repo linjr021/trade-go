@@ -239,6 +239,11 @@ resolve_runtime_options() {
   local token_from_file
   token_from_file="$(env_file_value CF_TUNNEL_TOKEN .env)"
   local token="${token_from_env:-${token_from_file}}"
+  local tunnel_enabled_from_env="${CF_TUNNEL_ENABLED:-}"
+  local tunnel_enabled_from_file
+  tunnel_enabled_from_file="$(env_file_value CF_TUNNEL_ENABLED .env)"
+  local tunnel_enabled="${tunnel_enabled_from_env:-${tunnel_enabled_from_file}}"
+  tunnel_enabled="$(echo -n "${tunnel_enabled}" | tr '[:upper:]' '[:lower:]')"
 
   local frontend_from_env="${FRONTEND_PORT:-}"
   local frontend_from_file
@@ -258,11 +263,24 @@ resolve_runtime_options() {
       ENABLE_TUNNEL="false"
       ;;
     auto)
-      if [[ -n "${token}" ]]; then
-        ENABLE_TUNNEL="true"
-      else
-        ENABLE_TUNNEL="false"
-      fi
+      case "${tunnel_enabled}" in
+        true|1|yes|on)
+          ENABLE_TUNNEL="true"
+          ;;
+        false|0|no|off)
+          ENABLE_TUNNEL="false"
+          ;;
+        ""|auto)
+          if [[ -n "${token}" ]]; then
+            ENABLE_TUNNEL="true"
+          else
+            ENABLE_TUNNEL="false"
+          fi
+          ;;
+        *)
+          die "CF_TUNNEL_ENABLED 仅支持 auto/true/false（或等价值）"
+          ;;
+      esac
       ;;
     *)
       die "WITH_TUNNEL 参数非法: ${WITH_TUNNEL}"

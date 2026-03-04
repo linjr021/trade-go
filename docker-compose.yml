@@ -6,6 +6,7 @@ services:
       args:
         GOPROXY: "${GO_PROXY:-https://goproxy.cn,direct}"
         GOSUMDB: "${GO_SUMDB:-sum.golang.google.cn}"
+        ALPINE_MIRROR: "${ALPINE_MIRROR:-mirrors.aliyun.com}"
     restart: unless-stopped
     env_file:
       - .env
