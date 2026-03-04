@@ -97,6 +97,7 @@ trade-go/
 ├── docker-compose.yml
 ├── .dockerignore
 ├── scripts/
+│   ├── deploy_docker.sh          # Docker 一键部署（自动安装 Docker/Compose）
 │   └── install_linux.sh          # Linux 一键安装（systemd + nginx）
 ├── app/
 │   └── app.go                    # MODE=web|cli 启动编排
@@ -181,6 +182,46 @@ docker compose down
 
 - `docker-compose.yml` 已将 `./data` 挂载到容器内 `/app/data`，用于持久化数据库与策略文件。
 - `./.env` 已挂载到后端容器 `/app/.env`，前端“系统设置”修改环境变量后会回写到该文件。
+
+### 6.5 Linux 一键 Docker 部署脚本（自动安装 Docker/Compose）
+
+脚本路径：
+
+- `scripts/deploy_docker.sh`
+
+执行方式：
+
+```bash
+chmod +x scripts/deploy_docker.sh
+sudo bash scripts/deploy_docker.sh
+```
+
+脚本会自动完成：
+
+- 检测 Docker 是否安装，未安装则自动安装 Docker Engine
+- 检测 Docker Compose 插件（`docker compose`），未安装则自动安装
+- 启动并拉起 Docker 服务
+- 自动初始化 `.env`（若缺失则从 `.env.example` 复制）
+- 启动 `docker compose up -d --build`
+
+可选参数：
+
+```bash
+sudo bash scripts/deploy_docker.sh --help
+
+sudo bash scripts/deploy_docker.sh \
+  --project-dir /opt/trade-go \
+  --no-build
+
+# 已自行安装 Docker 时可跳过安装检测
+sudo bash scripts/deploy_docker.sh --skip-docker-install
+```
+
+注意：
+
+- 该脚本面向 Linux 服务器。
+- 首次执行会尝试将当前 sudo 用户加入 `docker` 用户组，重新登录后可免 sudo 使用 docker 命令。
+- 若自动安装失败，可手动安装 Docker 后再执行 `--skip-docker-install`。
 
 ## 7. Linux 一键安装脚本（systemd + nginx）
 

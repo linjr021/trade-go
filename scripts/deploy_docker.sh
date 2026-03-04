@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+SKIP_DOCKER_INSTALL="false"
+NO_BUILD="false"
+
+log() {
+  echo "[deploy-docker] $*"
+}
+
+warn() {
+  echo "[deploy-docker][WARN] $*" >&2
+}
+
+die() {
+  echo "[deploy-docker][ERROR] $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+用法:
+  sudo bash scripts/deploy_docker.sh [选项]
+
+选项:
+  --project-dir <dir>       项目目录（默认: 脚本上级目录）
+  --skip-docker-install     跳过 Docker/Compose 安装，仅执行部署
+  --no-build                启动时不强制 --build
+  -h, --help                查看帮助
+
+示例:
+  sudo bash scripts/deploy_docker.sh
+  sudo bash scripts/deploy_docker.sh --project-dir /opt/trade-go --no-build
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project-dir)
+        shift
+        [[ $# -gt 0 ]] || die "--project-dir 需要参数"
+        PROJECT_DIR="$1"
+        ;;
+      --skip-docker-install)
+        SKIP_DOCKER_INSTALL="true"
+        ;;
+      --no-build)
+        NO_BUILD="true"
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "未知参数: $1（使用 --help 查看可用参数）"
+        ;;
+    esac
+    shift
+  done
+}
+
+ensure_root() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    log "需要 root 权限，正在通过 sudo 重新执行..."
+    exec sudo -E bash "$0" "$@"
+  fi
+  die "请使用 root 运行，或安装 sudo 后重试"
+}
+
+pkg_install() {
+  local packages=("$@")
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y "${packages[@]}"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y "${packages[@]}"
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm "${packages[@]}"
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install "${packages[@]}"
+  else
+    die "未识别的包管理器，请手动安装: ${packages[*]}"
+  fi
+}
+
+install_docker_engine() {
+  if command -v docker >/dev/null 2>&1; then
+    log "已检测到 Docker: $(docker --version)"
+    return
+  fi
+
+  log "未检测到 Docker，开始自动安装..."
+  pkg_install ca-certificates curl
+
+  # 优先使用 Docker 官方安装脚本，适配多发行版。
+  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+
+  command -v docker >/dev/null 2>&1 || die "Docker 安装失败，请手动检查"
+  log "Docker 安装完成: $(docker --version)"
+}
+
+install_compose_plugin() {
+  if docker compose version >/dev/null 2>&1; then
+    log "已检测到 Docker Compose 插件: $(docker compose version --short 2>/dev/null || docker compose version)"
+    return
+  fi
+
+  log "未检测到 Docker Compose 插件，尝试通过系统包安装..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y docker-compose-plugin || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y docker-compose-plugin || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install docker-compose || true
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    log "Docker Compose 插件安装完成"
+    return
+  fi
+
+  log "系统包安装失败，改为下载官方 Compose 插件二进制..."
+  local arch
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    armv7l|armv7) arch="armv7" ;;
+    *)
+      die "不支持的 CPU 架构: $(uname -m)"
+      ;;
+  esac
+
+  local version
+  version="$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\(v[0-9.]*\)".*/\1/p' | head -n1)"
+  [[ -n "${version}" ]] || version="v2.29.7"
+
+  local plugin_dir="/usr/local/lib/docker/cli-plugins"
+  mkdir -p "${plugin_dir}"
+  curl -fL "https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${arch}" -o "${plugin_dir}/docker-compose"
+  chmod +x "${plugin_dir}/docker-compose"
+
+  docker compose version >/dev/null 2>&1 || die "Docker Compose 插件安装失败"
+  log "Docker Compose 插件安装完成: $(docker compose version --short 2>/dev/null || docker compose version)"
+}
+
+start_docker_service() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl restart docker
+  elif command -v service >/dev/null 2>&1; then
+    service docker start || true
+  fi
+
+  for _ in $(seq 1 20); do
+    if docker info >/dev/null 2>&1; then
+      log "Docker 服务已就绪"
+      return
+    fi
+    sleep 1
+  done
+  die "Docker 服务未就绪，请检查守护进程状态"
+}
+
+grant_docker_group() {
+  local target_user="${SUDO_USER:-}"
+  if [[ -z "${target_user}" || "${target_user}" == "root" ]]; then
+    return
+  fi
+  if ! getent group docker >/dev/null 2>&1; then
+    groupadd docker || true
+  fi
+  if id -nG "${target_user}" | tr ' ' '\n' | grep -qx docker; then
+    return
+  fi
+  usermod -aG docker "${target_user}" || true
+  warn "已将用户 ${target_user} 加入 docker 组，重新登录后可免 sudo 执行 docker 命令"
+}
+
+prepare_project() {
+  [[ -d "${PROJECT_DIR}" ]] || die "项目目录不存在: ${PROJECT_DIR}"
+  [[ -f "${PROJECT_DIR}/docker-compose.yml" ]] || die "缺少 docker-compose.yml: ${PROJECT_DIR}"
+
+  cd "${PROJECT_DIR}"
+  mkdir -p data logs
+
+  if [[ ! -f ".env" ]]; then
+    if [[ -f ".env.example" ]]; then
+      cp .env.example .env
+      warn "检测到缺少 .env，已从 .env.example 初始化，请尽快填写真实参数后再重启服务"
+    else
+      die "缺少 .env 和 .env.example，无法继续"
+    fi
+  fi
+}
+
+deploy_compose() {
+  if [[ "${NO_BUILD}" == "true" ]]; then
+    docker compose up -d
+  else
+    docker compose up -d --build
+  fi
+}
+
+main() {
+  local original_args=("$@")
+  parse_args "$@"
+  ensure_root "${original_args[@]}"
+
+  log "项目目录: ${PROJECT_DIR}"
+  if [[ "${SKIP_DOCKER_INSTALL}" != "true" ]]; then
+    install_docker_engine
+    install_compose_plugin
+  else
+    log "已跳过 Docker/Compose 安装步骤"
+  fi
+
+  start_docker_service
+  grant_docker_group
+  prepare_project
+
+  log "启动 Docker Compose 服务..."
+  deploy_compose
+
+  log "部署完成。"
+  log "前端: http://localhost:5173"
+  log "后端: http://localhost:8080"
+  log "状态检查: curl http://localhost:8080/api/status"
+}
+
+main "$@"
