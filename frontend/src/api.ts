@@ -119,3 +119,5 @@ export const startPaperSimulation = (payload: Record<string, any> = {}) =>
   http.post('/paper/start', payload, { timeout: 90000 })
 export const stopPaperSimulation = () => http.post('/paper/stop')
 export const resetPaperPnL = (payload: Record<string, any> = {}) => http.post('/paper/reset-pnl', payload)
+export const resetPaperRiskBaseline = (payload: Record<string, any> = {}) =>
+  http.post('/paper/risk/reset', payload, { timeout: 30000 })

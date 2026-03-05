@@ -349,6 +349,8 @@ export function SkillWorkflowPageSection(p) {
     saveCoreRiskSettings,
     resettingRiskBaseline,
     resetRiskManually,
+    resettingPaperRiskBaseline,
+    resetPaperRiskManually,
     autoReviewFields,
     systemSettings,
     setSystemSettings,
@@ -622,7 +624,14 @@ export function SkillWorkflowPageSection(p) {
                     onClick={resetRiskManually}
                     loading={resettingRiskBaseline}
                   >
-                    {resettingRiskBaseline ? '解除中...' : '手动解除风控'}
+                    {resettingRiskBaseline ? '解除中...' : '解除实盘风控'}
+                  </ActionButton>
+                  <ActionButton
+                    className="btn-flat btn-flat-rose"
+                    onClick={resetPaperRiskManually}
+                    loading={resettingPaperRiskBaseline}
+                  >
+                    {resettingPaperRiskBaseline ? '解除中...' : '解除模拟风控'}
                   </ActionButton>
                   <ActionButton
                     className={`btn-flat btn-flat-blue save-config-btn ${savingCoreRiskSettings ? 'is-saving' : ''}`}

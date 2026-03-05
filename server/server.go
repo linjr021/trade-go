@@ -122,6 +122,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/paper/start", s.handlePaperStart)
 	mux.HandleFunc("/api/paper/stop", s.handlePaperStop)
 	mux.HandleFunc("/api/paper/reset-pnl", s.handlePaperResetPnL)
+	mux.HandleFunc("/api/paper/risk/reset", s.handlePaperRiskReset)
 }
 
 func (s *Service) StartScheduler() {

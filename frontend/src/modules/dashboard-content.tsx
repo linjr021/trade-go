@@ -171,6 +171,8 @@ export function DashboardContent({ c, renderOverviewCards }) {
           saveCoreRiskSettings={c.saveCoreRiskSettings}
           resettingRiskBaseline={c.resettingRiskBaseline}
           resetRiskManually={c.resetRiskManually}
+          resettingPaperRiskBaseline={c.resettingPaperRiskBaseline}
+          resetPaperRiskManually={c.resetPaperRiskManually}
           autoReviewFields={autoReviewFields}
           systemSettings={c.systemSettings}
           setSystemSettings={c.setSystemSettings}

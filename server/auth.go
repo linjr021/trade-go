@@ -138,7 +138,7 @@ func resolveAuthPermissionPolicy(path, method string) authPermissionPolicy {
 		return authPermissionPolicy{Module: "system", Need: storage.AccessEdit}
 	case "/api/settings", "/api/run", "/api/scheduler/start", "/api/scheduler/stop":
 		return authPermissionPolicy{Module: "live", Need: storage.AccessEdit}
-	case "/api/paper/simulate-step", "/api/paper/config", "/api/paper/start", "/api/paper/stop", "/api/paper/reset-pnl":
+	case "/api/paper/simulate-step", "/api/paper/config", "/api/paper/start", "/api/paper/stop", "/api/paper/reset-pnl", "/api/paper/risk/reset":
 		return authPermissionPolicy{Module: "paper", Need: storage.AccessEdit}
 	default:
 		// fallback: authenticated only

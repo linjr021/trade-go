@@ -48,7 +48,11 @@ func (s *Service) handlePaperSimulateStep(w http.ResponseWriter, r *http.Request
 	if baseBalance <= 0 {
 		baseBalance = paperCfg.Balance
 	}
-	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, req.Symbol, baseBalance)
+	resetAt := ""
+	if s.paperState.RiskResetAtMap != nil {
+		resetAt = strings.TrimSpace(s.paperState.RiskResetAtMap[strings.ToUpper(strings.TrimSpace(req.Symbol))])
+	}
+	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, req.Symbol, baseBalance, resetAt)
 	s.mu.RUnlock()
 
 	maxRiskPerTrade := req.MaxRiskPerTradePct
