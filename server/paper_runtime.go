@@ -87,6 +87,7 @@ type paperRuntimeState struct {
 	LatestDecisionMap map[string]trader.PaperSimulationResult `json:"latest_decision_map"`
 	Records           []paperTradeRecord                      `json:"records"`
 	PnLBaselineMap    map[string]float64                      `json:"pnl_baseline_map"`
+	RiskResetAtMap    map[string]string                       `json:"risk_reset_at_map"`
 	StrategyHistory   []paperStrategyHistoryEntry             `json:"strategy_history"`
 }
 
@@ -126,6 +127,7 @@ func (s *Service) initPaperRuntime() {
 		LatestDecisionMap: map[string]trader.PaperSimulationResult{},
 		Records:           []paperTradeRecord{},
 		PnLBaselineMap:    map[string]float64{},
+		RiskResetAtMap:    map[string]string{},
 		StrategyHistory:   []paperStrategyHistoryEntry{},
 	}
 	if loaded, err := readPaperRuntimeState(); err == nil {
@@ -245,6 +247,9 @@ func (s *Service) normalizePaperRuntimeState(in paperRuntimeState, fallback pape
 	}
 	if out.PnLBaselineMap == nil {
 		out.PnLBaselineMap = map[string]float64{}
+	}
+	if out.RiskResetAtMap == nil {
+		out.RiskResetAtMap = map[string]string{}
 	}
 	if out.Records == nil {
 		out.Records = []paperTradeRecord{}
@@ -468,6 +473,14 @@ func (s *Service) clonePaperStateLocked() paperRuntimeState {
 	for k, v := range src.PnLBaselineMap {
 		dst.PnLBaselineMap[k] = v
 	}
+	dst.RiskResetAtMap = map[string]string{}
+	for k, v := range src.RiskResetAtMap {
+		key := strings.ToUpper(strings.TrimSpace(k))
+		if key == "" {
+			continue
+		}
+		dst.RiskResetAtMap[key] = strings.TrimSpace(v)
+	}
 
 	dst.LatestDecisionMap = map[string]trader.PaperSimulationResult{}
 	for k, v := range src.LatestDecisionMap {
@@ -518,6 +531,7 @@ func (s *Service) handlePaperState(w http.ResponseWriter, r *http.Request) {
 		"latest_decision_map": st.LatestDecisionMap,
 		"records":             records,
 		"pnl_baseline_map":    st.PnLBaselineMap,
+		"risk_reset_at_map":   st.RiskResetAtMap,
 		"strategy_history":    st.StrategyHistory,
 	})
 }
@@ -829,6 +843,70 @@ func (s *Service) handlePaperResetPnL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type paperRiskResetRequest struct {
+	Symbol string `json:"symbol"`
+	Reason string `json:"reason"`
+}
+
+func (s *Service) handlePaperRiskReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req paperRiskResetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	principal, _ := principalFromRequest(r)
+	operator := strings.TrimSpace(principal.Username)
+	if operator == "" {
+		operator = "unknown"
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "manual_clear_paper"
+	}
+	symbol, resetAt, err := s.resetPaperRiskBaseline(req.Symbol)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "重置模拟风控基线失败: "+err.Error())
+		return
+	}
+	_ = s.saveAuthAudit(r, principal, "paper_risk_manual_reset", "paper", symbol, "ok", map[string]any{
+		"reason":   reason,
+		"reset_at": resetAt,
+		"symbol":   symbol,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":  "模拟风控基线已重置",
+		"symbol":   symbol,
+		"reset_at": resetAt,
+		"operator": operator,
+		"reason":   reason,
+	})
+}
+
+func (s *Service) resetPaperRiskBaseline(rawSymbol string) (string, string, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(rawSymbol))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if symbol == "" {
+		symbol = strings.ToUpper(strings.TrimSpace(s.paperState.Config.Symbol))
+	}
+	if symbol == "" {
+		symbol = "BTCUSDT"
+	}
+	if s.paperState.RiskResetAtMap == nil {
+		s.paperState.RiskResetAtMap = map[string]string{}
+	}
+	resetAt := time.Now().Format(time.RFC3339)
+	s.paperState.RiskResetAtMap[symbol] = resetAt
+	if err := s.persistPaperStateLocked(); err != nil {
+		return "", "", err
+	}
+	return symbol, resetAt, nil
+}
+
 func (s *Service) paperLoop(ctx context.Context) {
 	s.runPaperCycle()
 	for {
@@ -867,7 +945,11 @@ func (s *Service) runPaperCycle() {
 	s.mu.RLock()
 	cfg := s.paperState.Config
 	running := s.paperState.Running
-	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, cfg.Symbol, cfg.Balance)
+	resetAt := ""
+	if s.paperState.RiskResetAtMap != nil {
+		resetAt = strings.TrimSpace(s.paperState.RiskResetAtMap[strings.ToUpper(strings.TrimSpace(cfg.Symbol))])
+	}
+	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, cfg.Symbol, cfg.Balance, resetAt)
 	s.mu.RUnlock()
 	if !running {
 		return
@@ -990,12 +1072,24 @@ type paperRiskSnapshot struct {
 	ConsecutiveLosses int
 }
 
-func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalance float64) paperRiskSnapshot {
+func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalance float64, resetAt string) paperRiskSnapshot {
 	base := baseBalance
 	if !isFinite(base) || base <= 0 {
 		base = paperDefaultSimBalance
 	}
 	target := strings.ToUpper(strings.TrimSpace(symbol))
+	resetAt = strings.TrimSpace(resetAt)
+	var resetAtTime time.Time
+	var hasReset bool
+	if resetAt != "" {
+		if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
+			resetAtTime = t
+			hasReset = true
+		} else if t, err := time.Parse(time.RFC3339Nano, resetAt); err == nil {
+			resetAtTime = t
+			hasReset = true
+		}
+	}
 	snap := paperRiskSnapshot{
 		TodayPnL:          0,
 		PeakEquity:        base,
@@ -1010,6 +1104,16 @@ func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalan
 		if target != "" && rowSymbol != "" && rowSymbol != target {
 			continue
 		}
+		rowTS := strings.TrimSpace(row.TS)
+		if hasReset {
+			if ts, ok := parsePaperRecordTime(rowTS); ok {
+				if ts.Before(resetAtTime) {
+					continue
+				}
+			} else if rowTS != "" && resetAt != "" && rowTS < resetAt {
+				continue
+			}
+		}
 		pnl := row.UnrealizedPnL
 		if !isFinite(pnl) {
 			continue
@@ -1018,7 +1122,11 @@ func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalan
 		if equity > snap.PeakEquity {
 			snap.PeakEquity = equity
 		}
-		if strings.HasPrefix(strings.TrimSpace(row.TS), today) {
+		if ts, ok := parsePaperRecordTime(rowTS); ok {
+			if ts.In(time.Local).Format("2006-01-02") == today {
+				snap.TodayPnL += pnl
+			}
+		} else if strings.HasPrefix(rowTS, today) {
 			snap.TodayPnL += pnl
 		}
 	}
@@ -1031,6 +1139,16 @@ func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalan
 		if target != "" && rowSymbol != "" && rowSymbol != target {
 			continue
 		}
+		rowTS := strings.TrimSpace(row.TS)
+		if hasReset {
+			if ts, ok := parsePaperRecordTime(rowTS); ok {
+				if ts.Before(resetAtTime) {
+					continue
+				}
+			} else if rowTS != "" && resetAt != "" && rowTS < resetAt {
+				continue
+			}
+		}
 		pnl := row.UnrealizedPnL
 		if !isFinite(pnl) {
 			continue
@@ -1042,6 +1160,20 @@ func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalan
 		break
 	}
 	return snap
+}
+
+func parsePaperRecordTime(raw string) (time.Time, bool) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 func calcPaperRuntimePnL(signal string, lastPrice, currentPrice, size float64) float64 {

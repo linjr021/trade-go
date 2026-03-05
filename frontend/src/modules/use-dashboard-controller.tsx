@@ -71,6 +71,7 @@ import {
   startPaperSimulation,
   stopPaperSimulation,
   resetPaperPnL,
+  resetPaperRiskBaseline,
   saveSystemSettings,
   getSystemRuntimeStatus,
   restartSystemRuntime,
@@ -461,6 +462,7 @@ export function useDashboardController() {
   const [savingCoreRiskSettings, setSavingCoreRiskSettings] = useState(false)
   const [coreRiskSaveHint, setCoreRiskSaveHint] = useState('')
   const [resettingRiskBaseline, setResettingRiskBaseline] = useState(false)
+  const [resettingPaperRiskBaseline, setResettingPaperRiskBaseline] = useState(false)
   const [toast, setToast] = useState({ visible: false, type: 'success', message: '' })
 
   const [builderTab, setBuilderTab] = useState('generate')
@@ -1827,6 +1829,29 @@ export function useDashboardController() {
     }
   }
 
+  const resetPaperRiskManually = useCallback(async () => {
+    const confirmed = window.prompt('这是危险操作。输入 RESET 确认解除模拟风控：', '')
+    if (String(confirmed || '').trim().toUpperCase() !== 'RESET') {
+      return
+    }
+    setResettingPaperRiskBaseline(true)
+    setError('')
+    try {
+      const symbol = String(paperPair || paperRuntime?.symbol || 'BTCUSDT').toUpperCase()
+      const reason = `manual_ui_reset_paper_${Date.now()}`
+      const res = await resetPaperRiskBaseline({ symbol, reason })
+      const at = String(res?.data?.reset_at || '').trim()
+      showToast('success', at ? `已解除模拟风控（${fmtTime(at)}）` : '已解除模拟风控')
+      await loadPaperState(true, false)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '解除失败'
+      setError(reason)
+      showToast('error', `解除失败：${reason}`)
+    } finally {
+      setResettingPaperRiskBaseline(false)
+    }
+  }, [paperPair, paperRuntime?.symbol, loadPaperState])
+
   const handleAddLLM = async () => {
     setAddingLLM(true)
     setError('')
@@ -2817,6 +2842,8 @@ export function useDashboardController() {
     saveCoreRiskSettings,
     resettingRiskBaseline,
     resetRiskManually,
+    resettingPaperRiskBaseline,
+    resetPaperRiskManually,
     autoReviewSaveHint,
     savingAutoReviewSettings,
     saveAutoReviewEnv,
