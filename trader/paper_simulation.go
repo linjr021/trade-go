@@ -21,6 +21,16 @@ type PaperSimulationInput struct {
 	LowConfidenceMarginPct  float64
 	Leverage                int
 	EnabledStrategies       []string
+	MaxRiskPerTradePct      float64
+	MaxPositionPct          float64
+	MaxConsecutiveLosses    int
+	MaxDailyLossPct         float64
+	MaxDrawdownPct          float64
+	LiquidationBufferPct    float64
+	RiskTodayPnL            float64
+	RiskPeakEquity          float64
+	RiskCurrentEquity       float64
+	RiskConsecutiveLosses   int
 }
 
 type PaperSimulationResult struct {
@@ -158,7 +168,26 @@ func (b *Bot) RunPaperSimulation(in PaperSimulationInput) (PaperSimulationResult
 		"continue")
 
 	riskPlanAt := time.Now()
-	tradeAmount, allow, riskReason := buildRiskPositionByConfig(b.riskEngine, signal, pd, simCfg, balance)
+	snapshot := risk.Snapshot{
+		Balance:           balance,
+		TodayPnL:          in.RiskTodayPnL,
+		CurrentEquity:     balance,
+		PeakEquity:        balance,
+		ConsecutiveLosses: in.RiskConsecutiveLosses,
+	}
+	if isPositiveNumber(in.RiskCurrentEquity) {
+		snapshot.CurrentEquity = in.RiskCurrentEquity
+	}
+	if isPositiveNumber(in.RiskPeakEquity) {
+		snapshot.PeakEquity = in.RiskPeakEquity
+	}
+	if snapshot.PeakEquity < snapshot.CurrentEquity {
+		snapshot.PeakEquity = snapshot.CurrentEquity
+	}
+	if snapshot.ConsecutiveLosses < 0 {
+		snapshot.ConsecutiveLosses = 0
+	}
+	tradeAmount, allow, riskReason := buildRiskPositionByConfig(signal, pd, simCfg, snapshot)
 	if !allow {
 		b.saveSkillStepAudit(cycleID, "risk-plan", "failed", "risk_blocked", "", riskPlanAt,
 			map[string]any{"signal": signal, "price": pd.Price, "paper": true},
@@ -241,6 +270,24 @@ func (b *Bot) buildPaperConfig(in PaperSimulationInput) config.TradeConfig {
 	if cfg.Leverage > 150 {
 		cfg.Leverage = 150
 	}
+	if isValidNumber(in.MaxRiskPerTradePct) && in.MaxRiskPerTradePct > 0 {
+		cfg.MaxRiskPerTradePct = clampFloat(in.MaxRiskPerTradePct, 0.0001, 1)
+	}
+	if isValidNumber(in.MaxPositionPct) && in.MaxPositionPct > 0 {
+		cfg.MaxPositionPct = clampFloat(in.MaxPositionPct, 0.0001, 1)
+	}
+	if in.MaxConsecutiveLosses >= 0 {
+		cfg.MaxConsecutiveLosses = in.MaxConsecutiveLosses
+	}
+	if isValidNumber(in.MaxDailyLossPct) && in.MaxDailyLossPct > 0 {
+		cfg.MaxDailyLossPct = clampFloat(in.MaxDailyLossPct, 0.0001, 1)
+	}
+	if isValidNumber(in.MaxDrawdownPct) && in.MaxDrawdownPct > 0 {
+		cfg.MaxDrawdownPct = clampFloat(in.MaxDrawdownPct, 0.0001, 1)
+	}
+	if isValidNumber(in.LiquidationBufferPct) && in.LiquidationBufferPct > 0 {
+		cfg.LiquidationBufferPct = clampFloat(in.LiquidationBufferPct, 0.0001, 1)
+	}
 	return cfg
 }
 
@@ -302,19 +349,15 @@ func (b *Bot) analyzeWithRetryWithStrategies(pd models.PriceData, pos *models.Po
 	return fb
 }
 
-func buildRiskPositionByConfig(engine *risk.Engine, signal models.TradeSignal, pd models.PriceData, cfg config.TradeConfig, balance float64) (float64, bool, string) {
+func buildRiskPositionByConfig(signal models.TradeSignal, pd models.PriceData, cfg config.TradeConfig, snapshot risk.Snapshot) (float64, bool, string) {
 	if strings.ToUpper(strings.TrimSpace(signal.Signal)) == "HOLD" {
 		return 0, true, ""
 	}
-	if !isPositiveNumber(balance) {
+	if !isPositiveNumber(snapshot.Balance) {
 		return 0, false, "模拟保证金无效"
 	}
-	suggested := suggestedAmountByConfidence(signal.Confidence, cfg, balance, pd.Price)
-	snapshot := risk.Snapshot{
-		Balance:       balance,
-		CurrentEquity: balance,
-		PeakEquity:    balance,
-	}
+	suggested := suggestedAmountByConfidence(signal.Confidence, cfg, snapshot.Balance, pd.Price)
+	engine := risk.NewEngine(&cfg)
 	plan := engine.BuildOrderPlan(risk.OrderPlanInput{
 		Price:         pd.Price,
 		StopLoss:      signal.StopLoss,

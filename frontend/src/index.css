@@ -54,6 +54,6 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-family: var(--ui-font, "Inter", "PingFang SC", "Microsoft YaHei", sans-serif);
   }
 }

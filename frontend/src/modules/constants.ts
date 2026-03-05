@@ -6,6 +6,7 @@ export const MENU_ITEMS = [
   { key: 'skill_workflow', label: 'AI 工作流' },
   { key: 'builder', label: '策略生成' },
   { key: 'backtest', label: '历史回测' },
+  { key: 'auth_admin', label: '权限审计' },
   { key: 'system', label: '系统设置' },
 ]
 

@@ -1,9 +1,67 @@
-import axios from 'axios'
+import axios, { AxiosHeaders } from 'axios'
+
+const AUTH_TOKEN_KEY = 'auth_token'
+
+export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || ''
+export const setAuthToken = (token: string) => {
+  const v = String(token || '').trim()
+  if (!v) {
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    return
+  }
+  localStorage.setItem(AUTH_TOKEN_KEY, v)
+}
+export const clearAuthToken = () => localStorage.removeItem(AUTH_TOKEN_KEY)
 
 const http = axios.create({
   baseURL: '/api',
   timeout: 20000,
 })
+
+http.interceptors.request.use((cfg) => {
+  const token = getAuthToken()
+  if (token) {
+    const headers = AxiosHeaders.from(cfg.headers || {})
+    headers.set('Authorization', `Bearer ${token}`)
+    cfg.headers = headers
+  }
+  return cfg
+})
+
+http.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    const reqUrl = String(err?.config?.url || '')
+    if (err?.response?.status === 401 && !reqUrl.includes('/auth/login')) {
+      clearAuthToken()
+      window.dispatchEvent(new Event('auth:unauthorized'))
+    }
+    return Promise.reject(err)
+  },
+)
+
+export const login = (payload: { username: string; password: string }) =>
+  http.post('/auth/login', payload, { timeout: 30000 })
+export const getAuthBootstrapStatus = () => http.get('/auth/bootstrap-status')
+export const bootstrapAdminPassword = (payload: { password: string }) =>
+  http.post('/auth/bootstrap-admin', payload, { timeout: 30000 })
+export const logout = () => http.post('/auth/logout')
+export const getAuthMe = () => http.get('/auth/me')
+export const changeAuthCredentials = (payload: {
+  current_password: string
+  new_username: string
+  new_password: string
+}) => http.post('/auth/change-credentials', payload, { timeout: 30000 })
+export const getAuthRoles = () => http.get('/auth/roles')
+export const createAuthRole = (payload: Record<string, any>) => http.post('/auth/roles', payload)
+export const updateAuthRole = (payload: Record<string, any>) => http.post('/auth/roles/update', payload)
+export const deleteAuthRole = (payload: { role_id: number }) => http.post('/auth/roles/delete', payload)
+export const getAuthUsers = () => http.get('/auth/users')
+export const createAuthUser = (payload: Record<string, any>) => http.post('/auth/users', payload)
+export const updateAuthUserRole = (payload: Record<string, any>) => http.post('/auth/users/role', payload)
+export const updateAuthUserPassword = (payload: Record<string, any>) => http.post('/auth/users/password', payload)
+export const deleteAuthUser = (payload: { user_id: number }) => http.post('/auth/users/delete', payload)
+export const getAuthAuditLogs = (params: Record<string, any> = {}) => http.get('/auth/audit-logs', { params })
 
 export const getStatus = () => http.get('/status')
 export const getAccount = () => http.get('/account')
@@ -26,6 +84,8 @@ export const resetSkillWorkflow = () => http.post('/skill-workflow', { reset_def
 export const getLLMUsageLogs = (params: Record<string, any> = {}) => http.get('/llm-usage/logs', { params })
 export const runAutoStrategyRegenNow = (payload: Record<string, any> = {}) =>
   http.post('/auto-strategy/regen-now', payload, { timeout: 90000 })
+export const resetRiskBaseline = (payload: Record<string, any> = {}) =>
+  http.post('/risk/reset', payload, { timeout: 30000 })
 export const runBacktestApi = (payload: Record<string, any>) => http.post('/backtest', payload, { timeout: 120000 })
 export const getBacktestHistory = (limit: number = 80) => http.get('/backtest-history', { params: { limit } })
 export const getBacktestHistoryDetail = (id: number) => http.get('/backtest-history/detail', { params: { id } })

@@ -13,11 +13,13 @@ import (
 	"time"
 	"trade-go/ai"
 	"trade-go/config"
+	"trade-go/storage"
 	"trade-go/trader"
 )
 
 type Service struct {
 	bot *trader.Bot
+	db  *storage.Store
 
 	runMu sync.Mutex
 	mu    sync.RWMutex
@@ -36,16 +38,21 @@ type Service struct {
 	paperCancel context.CancelFunc
 	paperState  paperRuntimeState
 	liveState   liveRuntimeState
+
+	authMu   sync.RWMutex
+	sessions map[string]authSession
 }
 
-func NewService(bot *trader.Bot) *Service {
+func NewService(bot *trader.Bot, db *storage.Store) *Service {
 	applySkillWorkflowPromptsToEnv(loadSkillWorkflowConfig())
 	ai.SetUsageRecorder(recordLLMUsageWithMeta)
 	svc := &Service{
 		bot:                         bot,
+		db:                          db,
 		startedAt:                   time.Now(),
 		triggerMode:                 "idle",
 		lastAutoStrategyRegenReason: "等待自动重生成触发",
+		sessions:                    map[string]authSession{},
 	}
 	svc.initLiveRuntime()
 	svc.initPaperRuntime()
@@ -53,6 +60,21 @@ func NewService(bot *trader.Bot) *Service {
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("/api/auth/bootstrap-status", s.handleAuthBootstrapStatus)
+	mux.HandleFunc("/api/auth/bootstrap-admin", s.handleAuthBootstrapAdmin)
+	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("/api/auth/me", s.handleAuthMe)
+	mux.HandleFunc("/api/auth/change-credentials", s.handleAuthChangeCredentials)
+	mux.HandleFunc("/api/auth/roles", s.handleAuthRoles)
+	mux.HandleFunc("/api/auth/roles/update", s.handleAuthRoleUpdate)
+	mux.HandleFunc("/api/auth/users", s.handleAuthUsers)
+	mux.HandleFunc("/api/auth/users/role", s.handleAuthUserRoleUpdate)
+	mux.HandleFunc("/api/auth/users/password", s.handleAuthUserPasswordUpdate)
+	mux.HandleFunc("/api/auth/users/delete", s.handleAuthUserDelete)
+	mux.HandleFunc("/api/auth/roles/delete", s.handleAuthRoleDelete)
+	mux.HandleFunc("/api/auth/audit-logs", s.handleAuthAuditLogs)
+
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/account", s.handleAccount)
 	mux.HandleFunc("/api/assets/overview", s.handleAssetOverview)
@@ -89,6 +111,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/restart", s.handleSystemSoftRestart)
 	mux.HandleFunc("/api/llm/chat", s.handleLLMChat)
 	mux.HandleFunc("/api/auto-strategy/regen-now", s.handleAutoStrategyRegenNow)
+	mux.HandleFunc("/api/risk/reset", s.handleRiskManualReset)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/run", s.handleRunNow)
 	mux.HandleFunc("/api/scheduler/start", s.handleStartScheduler)
@@ -661,7 +684,7 @@ func Serve(addr string, service *Service) error {
 		})
 	})
 
-	handler := withCORS(mux)
+	handler := withCORS(service.authMiddleware(mux))
 	fmt.Printf("HTTP 服务已启动: %s\n", addr)
 	return http.ListenAndServe(addr, handler)
 }
@@ -669,7 +692,7 @@ func Serve(addr string, service *Service) error {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

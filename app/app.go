@@ -108,7 +108,7 @@ func (r *Runner) runWeb() error {
 			defer func() { _ = r.stream.Stop() }()
 		}
 	}
-	svc := server.NewService(r.bot)
+	svc := server.NewService(r.bot, r.store)
 	// Default-off runtime: live scheduler/realtime loop is started manually from UI/API.
 	// This prevents service restart from immediately resuming real trading.
 	svc.SetRealtimeLoopRunning(false)

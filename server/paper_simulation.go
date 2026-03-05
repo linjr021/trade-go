@@ -16,6 +16,12 @@ type paperSimulateStepRequest struct {
 	HighConfidenceMarginPct float64  `json:"high_confidence_margin_pct"`
 	LowConfidenceMarginPct  float64  `json:"low_confidence_margin_pct"`
 	Leverage                int      `json:"leverage"`
+	MaxRiskPerTradePct      float64  `json:"max_risk_per_trade_pct"`
+	MaxPositionPct          float64  `json:"max_position_pct"`
+	MaxConsecutiveLosses    int      `json:"max_consecutive_losses"`
+	MaxDailyLossPct         float64  `json:"max_daily_loss_pct"`
+	MaxDrawdownPct          float64  `json:"max_drawdown_pct"`
+	LiquidationBufferPct    float64  `json:"liquidation_buffer_pct"`
 	EnabledStrategies       []string `json:"enabled_strategies"`
 }
 
@@ -36,16 +42,60 @@ func (s *Service) handlePaperSimulateStep(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.mu.RLock()
+	paperCfg := s.paperState.Config
+	baseBalance := req.Balance
+	if baseBalance <= 0 {
+		baseBalance = paperCfg.Balance
+	}
+	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, req.Symbol, baseBalance)
+	s.mu.RUnlock()
+
+	maxRiskPerTrade := req.MaxRiskPerTradePct
+	if maxRiskPerTrade <= 0 {
+		maxRiskPerTrade = paperCfg.MaxRiskPerTradePct
+	}
+	maxPosition := req.MaxPositionPct
+	if maxPosition <= 0 {
+		maxPosition = paperCfg.MaxPositionPct
+	}
+	maxConsecutiveLosses := req.MaxConsecutiveLosses
+	if maxConsecutiveLosses < 0 {
+		maxConsecutiveLosses = paperCfg.MaxConsecutiveLosses
+	}
+	maxDailyLoss := req.MaxDailyLossPct
+	if maxDailyLoss <= 0 {
+		maxDailyLoss = paperCfg.MaxDailyLossPct
+	}
+	maxDrawdown := req.MaxDrawdownPct
+	if maxDrawdown <= 0 {
+		maxDrawdown = paperCfg.MaxDrawdownPct
+	}
+	liqBuffer := req.LiquidationBufferPct
+	if liqBuffer <= 0 {
+		liqBuffer = paperCfg.LiquidationBufferPct
+	}
+
 	s.runMu.Lock()
 	record, err := s.bot.RunPaperSimulation(trader.PaperSimulationInput{
 		Symbol:                  req.Symbol,
-		Balance:                 req.Balance,
+		Balance:                 baseBalance,
 		PositionSizingMode:      req.PositionSizingMode,
 		HighConfidenceAmount:    req.HighConfidenceAmount,
 		LowConfidenceAmount:     req.LowConfidenceAmount,
 		HighConfidenceMarginPct: req.HighConfidenceMarginPct,
 		LowConfidenceMarginPct:  req.LowConfidenceMarginPct,
 		Leverage:                req.Leverage,
+		MaxRiskPerTradePct:      maxRiskPerTrade,
+		MaxPositionPct:          maxPosition,
+		MaxConsecutiveLosses:    maxConsecutiveLosses,
+		MaxDailyLossPct:         maxDailyLoss,
+		MaxDrawdownPct:          maxDrawdown,
+		LiquidationBufferPct:    liqBuffer,
+		RiskTodayPnL:            riskSnap.TodayPnL,
+		RiskPeakEquity:          riskSnap.PeakEquity,
+		RiskCurrentEquity:       riskSnap.CurrentEquity,
+		RiskConsecutiveLosses:   riskSnap.ConsecutiveLosses,
 		EnabledStrategies:       req.EnabledStrategies,
 	})
 	s.runMu.Unlock()
