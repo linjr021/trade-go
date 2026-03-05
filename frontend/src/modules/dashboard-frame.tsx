@@ -4,6 +4,7 @@ import {
   Menu,
   Select,
 } from '@/components/ui/dashboard-primitives'
+import { ActionButton } from '@/components/ui/action-button'
 import { MENU_ITEMS } from '@/modules/constants'
 
 export function DashboardFrame({
@@ -15,6 +16,9 @@ export function DashboardFrame({
   error,
   themeMode,
   setThemeMode,
+  currentUser,
+  onLogout,
+  onOpenAuthAdmin,
   children,
 }) {
   return (
@@ -43,6 +47,22 @@ export function DashboardFrame({
             {error ? <p className="head-error">{error}</p> : null}
           </div>
           <div className="theme-switcher">
+            {currentUser ? (
+              <div className="auth-user-box">
+                <div className="auth-user-meta">
+                  <span className="auth-user-name">{currentUser.username}</span>
+                  <span className="auth-user-role">{currentUser.role_name || '-'}</span>
+                </div>
+                {typeof onOpenAuthAdmin === 'function' ? (
+                  <ActionButton className="btn-flat btn-flat-indigo btn-sm" onClick={onOpenAuthAdmin}>
+                    权限审计
+                  </ActionButton>
+                ) : null}
+                <ActionButton className="btn-flat btn-flat-gray btn-sm" onClick={onLogout}>
+                  退出登录
+                </ActionButton>
+              </div>
+            ) : null}
             <span>主题</span>
             <Select
               className="theme-mode-select"

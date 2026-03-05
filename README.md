@@ -8,6 +8,7 @@
 - 策略生成与自动升级
 - 历史回测与回测记录持久化
 - 资产详情面板（总资产、可用资金、趋势、盈亏日历、资产分布）
+- 账号登录与权限审计（RBAC 角色权限组 + 审计日志）
 
 ## 1. 当前项目状态（按代码真实行为）
 
@@ -87,6 +88,7 @@
 - 策略生成：按交易习惯生成策略，支持命名、重命名、删除
 - 历史回测：参数化回测、结果明细、记录入库、历史可删除
 - 系统设置：系统环境变量、智能体参数、交易所参数、系统状态
+- 登录与权限：账号登录、角色权限组（不可见/只读/编辑）、用户权限分配、操作审计
 
 ## 5. 项目结构
 
@@ -113,6 +115,7 @@ trade-go/
 │   └── paper_simulation.go       # 模拟交易 dry-run
 ├── server/
 │   ├── server.go                 # API 路由与主处理
+│   ├── auth.go                   # 登录鉴权 + RBAC + 权限审计 API
 │   ├── integrations.go           # 智能体/交易所集成管理
 │   ├── strategy_preference.go    # 策略生成
 │   ├── skill_workflow.go         # AI 工作流配置
@@ -120,7 +123,8 @@ trade-go/
 │   ├── system_settings.go        # 环境变量读写/校验
 │   └── system_runtime.go         # 系统状态/软重启
 ├── storage/
-│   └── sqlite.go                 # SQLite schema 与读写
+│   ├── sqlite.go                 # SQLite schema 与读写
+│   └── auth.go                   # 用户/角色/权限/审计持久化
 ├── data/
 │   ├── trade.db                  # SQLite 数据库
 │   ├── integrations.json         # 前端集成配置
@@ -145,6 +149,11 @@ cp .env.example .env
 ```
 
 然后在 `.env` 中填写你的智能体与交易所参数（例如 `AI_*`、`BINANCE_*` / `OKX_*`）。
+
+首次启动会自动创建管理员账号：
+
+- 账号：`admin`
+- 密码：无预设初始密码（首次打开登录页需先完成管理员密码初始化）
 
 ### 6.3 启动
 

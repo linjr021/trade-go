@@ -22,6 +22,54 @@ const WORKFLOW_CHANNEL_LABEL_MAP = {
   default: '默认',
 }
 
+const AI_WORKFLOW_HELP = {
+  step_enabled: '是否启用该步骤。关闭后此步骤将从工作流链路中跳过。',
+  step_timeout_sec: '步骤最大执行时长。超过阈值会判定步骤失败，并按“失败动作”执行。',
+  step_max_retry: '步骤失败后的自动重试次数。重试仍失败则按“失败动作”处理。',
+  step_on_fail: '失败处理策略：回退 HOLD（不下单）或硬失败阻断（中断执行链路）。',
+  constraint_max_leverage_cap: '策略生成的杠杆上限，不会超过该值。最终实盘仍会受核心风控和交易参数约束。',
+  constraint_max_drawdown_cap_pct: '策略层允许的最大回撤上限。计算：回撤=(历史峰值权益-当前权益)/历史峰值权益。',
+  constraint_max_risk_per_trade_cap_pct: '策略层单笔风险上限。计算：单笔最大亏损=账户权益×该比例。',
+  constraint_min_profit_loss_floor: '策略输出的最小盈亏比下限。计算：盈亏比=潜在盈利/潜在亏损。',
+  constraint_block_trade_on_skill_fail: '任一步骤失败时是否强制禁止下单。',
+  core_max_risk_per_trade_pct: '实盘/模拟执行风控阈值。计算：单笔最大亏损=账户权益×该比例。',
+  core_max_position_pct: '单笔可用保证金占权益上限。计算：最大保证金=账户权益×该比例。',
+  core_max_consecutive_losses: '连续亏损达到该次数后触发全局止停，暂停下单。',
+  core_max_daily_loss_pct: '当日亏损止停阈值。计算：当日亏损额>=账户权益×该比例时停机。',
+  core_max_drawdown_pct: '全周期最大回撤止停阈值。计算：回撤=(历史峰值权益-当前权益)/历史峰值权益。',
+  core_liquidation_buffer_pct: '强平保护缓冲。计算：最小止损距离比例=该值/杠杆，实际止损距离不足则拒单。',
+}
+
+const AUTO_REVIEW_LABEL_OVERRIDE = {
+  AUTO_REVIEW_ENABLED: '启用自动评估（true/false）',
+  AUTO_REVIEW_AFTER_ORDER_ONLY: '仅下单后评估（true/false）',
+  AUTO_REVIEW_INTERVAL_SEC: '评估间隔秒数（60-86400）',
+  AUTO_REVIEW_VOLATILITY_PCT: '波动阈值%（0-20）',
+  AUTO_REVIEW_DRAWDOWN_WARN_PCT: '回撤预警比例（0-1）',
+  AUTO_REVIEW_LOSS_STREAK_WARN: '连续亏损预警次数（1-100）',
+  AUTO_REVIEW_RISK_REDUCE_FACTOR: '风险收缩系数（0-1）',
+  AUTO_STRATEGY_REGEN_ENABLED: '启用自动重生成（true/false）',
+  AUTO_STRATEGY_REGEN_COOLDOWN_SEC: '重生成冷却秒数（300-604800）',
+  AUTO_STRATEGY_REGEN_LOSS_STREAK: '重生成连续亏损阈值（1-100）',
+  AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT: '重生成回撤阈值（0-1）',
+  AUTO_STRATEGY_REGEN_MIN_RR: '重生成最小盈亏比（1-10）',
+}
+
+const AUTO_REVIEW_HELP = {
+  AUTO_REVIEW_ENABLED: '是否启用自动评估风控。关闭后不会自动切换风险档位。',
+  AUTO_REVIEW_AFTER_ORDER_ONLY: '开启后仅在“有成交后”按间隔触发评估；关闭则按固定时间循环评估。',
+  AUTO_REVIEW_INTERVAL_SEC: '自动评估触发间隔（秒）。',
+  AUTO_REVIEW_VOLATILITY_PCT: '波动阈值。触发条件之一：|价格涨跌幅|>=阈值，或布林带宽度>=阈值×2。',
+  AUTO_REVIEW_DRAWDOWN_WARN_PCT: '回撤预警阈值。回撤=(峰值权益-当前权益)/峰值权益，超过则进入谨慎档。',
+  AUTO_REVIEW_LOSS_STREAK_WARN: '连续亏损次数达到该值后进入谨慎档。',
+  AUTO_REVIEW_RISK_REDUCE_FACTOR: '风险收缩系数。谨慎档会按该系数缩小杠杆、仓位、单笔风险和仓位上限。',
+  AUTO_STRATEGY_REGEN_ENABLED: '是否允许触发自动重生成策略。',
+  AUTO_STRATEGY_REGEN_COOLDOWN_SEC: '两次自动重生成之间的最小冷却时间（秒）。',
+  AUTO_STRATEGY_REGEN_LOSS_STREAK: '连续亏损达到该值时允许触发自动重生成。',
+  AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT: '回撤达到该阈值时允许触发自动重生成。',
+  AUTO_STRATEGY_REGEN_MIN_RR: '自动重生成策略时要求的最小盈亏比下限。',
+}
+
 function workflowLabel(value) {
   const raw = String(value || '').trim()
   if (!raw) return '-'
@@ -37,6 +85,30 @@ function workflowChannelText(channel) {
   const raw = String(channel || '').trim()
   if (!raw) return '-'
   return WORKFLOW_CHANNEL_LABEL_MAP[raw] || raw
+}
+
+function LabelWithTip({ label, tip }) {
+  const hint = String(tip || '').trim()
+  return (
+    <span className="field-label-with-help">
+      {label}
+      {hint ? (
+        <span className="field-help-wrap">
+          <button
+            type="button"
+            className="field-help-tip"
+            aria-label={`${label}说明`}
+            onClick={(e) => e.preventDefault()}
+          >
+            ?
+          </button>
+          <span className="field-help-popup" role="tooltip">
+            {hint}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  )
 }
 
 export function BuilderPageSection(p) {
@@ -270,6 +342,13 @@ export function SkillWorkflowPageSection(p) {
     setAiWorkflowLogChannel,
     aiWorkflowLogLimit,
     setAiWorkflowLogLimit,
+    coreRiskSettings,
+    setCoreRiskField,
+    savingCoreRiskSettings,
+    coreRiskSaveHint,
+    saveCoreRiskSettings,
+    resettingRiskBaseline,
+    resetRiskManually,
     autoReviewFields,
     systemSettings,
     setSystemSettings,
@@ -298,6 +377,7 @@ export function SkillWorkflowPageSection(p) {
           onChange={setAiWorkflowTab}
           items={[
             { key: 'config', label: '流程配置' },
+            { key: 'core_risk', label: '核心风控' },
             { key: 'auto_review', label: '自动评估' },
             { key: 'prompts', label: '提示词' },
             { key: 'logs', label: '执行记录' },
@@ -379,10 +459,10 @@ export function SkillWorkflowPageSection(p) {
                           checked={Boolean(step.enabled)}
                           onChange={(e) => updateSkillStepField(step.id, 'enabled', e.target.checked)}
                         />
-                        <span>启用</span>
+                        <LabelWithTip label="启用" tip={AI_WORKFLOW_HELP.step_enabled} />
                       </label>
                       <label>
-                        <span>超时(秒)</span>
+                        <LabelWithTip label="超时(秒, 1-300)" tip={AI_WORKFLOW_HELP.step_timeout_sec} />
                         <input
                           type="number"
                           min="1"
@@ -393,7 +473,7 @@ export function SkillWorkflowPageSection(p) {
                         />
                       </label>
                       <label>
-                        <span>重试次数</span>
+                        <LabelWithTip label="重试次数(0-5)" tip={AI_WORKFLOW_HELP.step_max_retry} />
                         <input
                           type="number"
                           min="0"
@@ -404,7 +484,7 @@ export function SkillWorkflowPageSection(p) {
                         />
                       </label>
                       <label>
-                        <span>失败动作</span>
+                        <LabelWithTip label="失败动作" tip={AI_WORKFLOW_HELP.step_on_fail} />
                         <select
                           value={String(step.on_fail || 'hold')}
                           onChange={(e) => updateSkillStepField(step.id, 'on_fail', e.target.value)}
@@ -423,7 +503,7 @@ export function SkillWorkflowPageSection(p) {
               <h4>硬边界参数</h4>
               <div className="form-grid workflow-constraints-grid">
                 <label>
-                  <span>最大杠杆上限</span>
+                  <LabelWithTip label="最大杠杆上限(1-150)" tip={AI_WORKFLOW_HELP.constraint_max_leverage_cap} />
                   <input
                     type="number"
                     min="1"
@@ -434,7 +514,7 @@ export function SkillWorkflowPageSection(p) {
                   />
                 </label>
                 <label>
-                  <span>最大回撤上限(%)</span>
+                  <LabelWithTip label="最大回撤上限(%，1-80)" tip={AI_WORKFLOW_HELP.constraint_max_drawdown_cap_pct} />
                   <input
                     type="number"
                     min="1"
@@ -445,7 +525,7 @@ export function SkillWorkflowPageSection(p) {
                   />
                 </label>
                 <label>
-                  <span>单笔风险上限(%)</span>
+                  <LabelWithTip label="单笔风险上限(%，0.1-20)" tip={AI_WORKFLOW_HELP.constraint_max_risk_per_trade_cap_pct} />
                   <input
                     type="number"
                     min="0.1"
@@ -456,7 +536,7 @@ export function SkillWorkflowPageSection(p) {
                   />
                 </label>
                 <label>
-                  <span>最小盈亏比下限</span>
+                  <LabelWithTip label="最小盈亏比下限(1-10)" tip={AI_WORKFLOW_HELP.constraint_min_profit_loss_floor} />
                   <input
                     type="number"
                     min="1"
@@ -467,7 +547,7 @@ export function SkillWorkflowPageSection(p) {
                   />
                 </label>
                 <label>
-                  <span>步骤失败后禁止下单</span>
+                  <LabelWithTip label="步骤失败后禁止下单" tip={AI_WORKFLOW_HELP.constraint_block_trade_on_skill_fail} />
                   <select
                     value={skillWorkflow?.constraints?.block_trade_on_skill_fail ? 'true' : 'false'}
                     onChange={(e) => updateSkillConstraintField('block_trade_on_skill_fail', e.target.value === 'true')}
@@ -500,9 +580,11 @@ export function SkillWorkflowPageSection(p) {
                   const key = String(f?.key || '').trim()
                   const isBool = key === 'AUTO_REVIEW_ENABLED' || key === 'AUTO_REVIEW_AFTER_ORDER_ONLY' || key === 'AUTO_STRATEGY_REGEN_ENABLED'
                   const rawValue = String(systemSettings?.[key] || '')
+                  const labelText = AUTO_REVIEW_LABEL_OVERRIDE[key] || f.label
+                  const labelTip = AUTO_REVIEW_HELP[key] || '用于自动评估与策略自动重生成的阈值控制。'
                   return (
                     <label key={`auto-review-${key}`}>
-                      <span>{f.label}</span>
+                      <LabelWithTip label={labelText} tip={labelTip} />
                       {isBool ? (
                         <select
                           value={rawValue === 'false' ? 'false' : 'true'}
@@ -525,6 +607,102 @@ export function SkillWorkflowPageSection(p) {
               </div>
               <div className="actions-row end">
                 {autoReviewSaveHint ? <span className="save-hint">{autoReviewSaveHint}</span> : null}
+              </div>
+            </section>
+          </div>
+        )}
+        {aiWorkflowTab === 'core_risk' && (
+          <div className="builder-pane workflow-pane">
+            <section className="sub-window">
+              <div className="card-head">
+                <h4>核心风控参数</h4>
+                <div className="inline-actions">
+                  <ActionButton
+                    className="btn-flat btn-flat-rose"
+                    onClick={resetRiskManually}
+                    loading={resettingRiskBaseline}
+                  >
+                    {resettingRiskBaseline ? '解除中...' : '手动解除风控'}
+                  </ActionButton>
+                  <ActionButton
+                    className={`btn-flat btn-flat-blue save-config-btn ${savingCoreRiskSettings ? 'is-saving' : ''}`}
+                    onClick={saveCoreRiskSettings}
+                    loading={savingCoreRiskSettings}
+                  >
+                    {savingCoreRiskSettings ? '保存中...' : '保存核心风控参数'}
+                  </ActionButton>
+                </div>
+              </div>
+              <div className="form-grid workflow-constraints-grid">
+                <label>
+                  <LabelWithTip label="单笔最大风险(%，0.01-100)" tip={AI_WORKFLOW_HELP.core_max_risk_per_trade_pct} />
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    value={Number(coreRiskSettings?.maxRiskPerTradePct || 0)}
+                    onChange={(e) => setCoreRiskField('maxRiskPerTradePct', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <LabelWithTip label="最大仓位比例(%，0.01-100)" tip={AI_WORKFLOW_HELP.core_max_position_pct} />
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    value={Number(coreRiskSettings?.maxPositionPct || 0)}
+                    onChange={(e) => setCoreRiskField('maxPositionPct', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <LabelWithTip label="连续亏损暂停阈值(次，0-100)" tip={AI_WORKFLOW_HELP.core_max_consecutive_losses} />
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={Number(coreRiskSettings?.maxConsecutiveLosses || 0)}
+                    onChange={(e) => setCoreRiskField('maxConsecutiveLosses', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <LabelWithTip label="当日最大亏损停止(%，0.01-100)" tip={AI_WORKFLOW_HELP.core_max_daily_loss_pct} />
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    value={Number(coreRiskSettings?.maxDailyLossPct || 0)}
+                    onChange={(e) => setCoreRiskField('maxDailyLossPct', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <LabelWithTip label="最大回撤停止(%，0.01-100)" tip={AI_WORKFLOW_HELP.core_max_drawdown_pct} />
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    value={Number(coreRiskSettings?.maxDrawdownPct || 0)}
+                    onChange={(e) => setCoreRiskField('maxDrawdownPct', Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <LabelWithTip label="强平价保护缓冲(%，0.01-100)" tip={AI_WORKFLOW_HELP.core_liquidation_buffer_pct} />
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    value={Number(coreRiskSettings?.liquidationBufferPct || 0)}
+                    onChange={(e) => setCoreRiskField('liquidationBufferPct', Number(e.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="actions-row end">
+                {coreRiskSaveHint ? <span className="save-hint">{coreRiskSaveHint}</span> : null}
               </div>
             </section>
           </div>

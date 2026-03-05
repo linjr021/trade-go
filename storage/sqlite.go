@@ -15,7 +15,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 type RiskSnapshot struct {
@@ -151,7 +152,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, path: path}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -252,6 +253,13 @@ func (s *Store) migrate() error {
 			event_type TEXT,
 			details TEXT
 		);`,
+		`CREATE TABLE IF NOT EXISTS risk_controls (
+			exchange TEXT PRIMARY KEY,
+			reset_at TEXT NOT NULL,
+			operator TEXT,
+			reason TEXT,
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS strategy_combo_stats (
 			combo TEXT PRIMARY KEY,
 			base_equity REAL NOT NULL,
@@ -311,6 +319,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_position_snapshots_ts ON position_snapshots(ts);`,
 		`CREATE INDEX IF NOT EXISTS idx_equity_curve_ts ON equity_curve(ts);`,
 		`CREATE INDEX IF NOT EXISTS idx_risk_events_ts ON risk_events(ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_risk_controls_updated_at ON risk_controls(updated_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_backtest_runs_pair_created_at ON backtest_runs(pair, created_at);`,
 	}
@@ -320,6 +329,9 @@ func (s *Store) migrate() error {
 		}
 	}
 	if err := s.migrateCompat(); err != nil {
+		return err
+	}
+	if err := s.migrateAuth(); err != nil {
 		return err
 	}
 	return nil
@@ -476,26 +488,57 @@ func (s *Store) LoadRiskSnapshot() (RiskSnapshot, error) {
 	var out RiskSnapshot
 	today := time.Now().Format("2006-01-02")
 	ex := currentExchange()
+	resetAt, err := s.loadRiskResetAt(ex)
+	if err != nil {
+		return out, err
+	}
+	todayLowerBound := today
+	if resetAt != "" && resetAt > todayLowerBound {
+		todayLowerBound = resetAt
+	}
 
-	err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(unrealized_pnl),0) FROM position_snapshots WHERE exchange=? AND substr(ts,1,10)=?`,
-		ex, today,
+	err = s.db.QueryRow(
+		`SELECT COALESCE(SUM(unrealized_pnl),0) FROM position_snapshots WHERE exchange=? AND ts>=?`,
+		ex, todayLowerBound,
 	).Scan(&out.TodayPnL)
 	if err != nil {
 		return out, err
 	}
 
-	err = s.db.QueryRow(`SELECT COALESCE(MAX(equity),0) FROM equity_curve WHERE exchange=?`, ex).Scan(&out.PeakEquity)
+	peakSQL := `SELECT COALESCE(MAX(equity),0) FROM equity_curve WHERE exchange=?`
+	peakArgs := []any{ex}
+	if resetAt != "" {
+		peakSQL += ` AND ts>=?`
+		peakArgs = append(peakArgs, resetAt)
+	}
+	err = s.db.QueryRow(peakSQL, peakArgs...).Scan(&out.PeakEquity)
 	if err != nil {
 		return out, err
 	}
-	err = s.db.QueryRow(`SELECT COALESCE(equity,0) FROM equity_curve WHERE exchange=? ORDER BY id DESC LIMIT 1`, ex).Scan(&out.CurrentEquity)
-	if err != nil {
+	curSQL := `SELECT equity FROM equity_curve WHERE exchange=?`
+	curArgs := []any{ex}
+	if resetAt != "" {
+		curSQL += ` AND ts>=?`
+		curArgs = append(curArgs, resetAt)
+	}
+	curSQL += ` ORDER BY id DESC LIMIT 1`
+	err = s.db.QueryRow(curSQL, curArgs...).Scan(&out.CurrentEquity)
+	if err != nil && err != sql.ErrNoRows {
 		return out, err
+	}
+	if err == sql.ErrNoRows {
+		out.CurrentEquity = 0
 	}
 
 	// 连续亏损（简化）：按最近持仓快照未实现盈亏连续为负计数。
-	rows, err := s.db.Query(`SELECT unrealized_pnl FROM position_snapshots WHERE exchange=? ORDER BY id DESC LIMIT 30`, ex)
+	lossSQL := `SELECT unrealized_pnl FROM position_snapshots WHERE exchange=?`
+	lossArgs := []any{ex}
+	if resetAt != "" {
+		lossSQL += ` AND ts>=?`
+		lossArgs = append(lossArgs, resetAt)
+	}
+	lossSQL += ` ORDER BY id DESC LIMIT 30`
+	rows, err := s.db.Query(lossSQL, lossArgs...)
 	if err != nil {
 		return out, err
 	}
@@ -517,6 +560,46 @@ func (s *Store) LoadRiskSnapshot() (RiskSnapshot, error) {
 	}
 	out.ConsecutiveLosses = consecutive
 	return out, nil
+}
+
+func (s *Store) loadRiskResetAt(exchange string) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	row := s.db.QueryRow(`SELECT reset_at FROM risk_controls WHERE exchange=? LIMIT 1`, exchange)
+	var resetAt sql.NullString
+	err := row.Scan(&resetAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resetAt.String), nil
+}
+
+func (s *Store) ResetRiskBaseline(operator, reason string) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	ex := currentExchange()
+	now := time.Now().Format(time.RFC3339)
+	op := strings.TrimSpace(operator)
+	rsn := strings.TrimSpace(reason)
+	_, err := s.db.Exec(
+		`INSERT INTO risk_controls (exchange, reset_at, operator, reason, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(exchange) DO UPDATE SET
+		 	reset_at=excluded.reset_at,
+		 	operator=excluded.operator,
+		 	reason=excluded.reason,
+		 	updated_at=excluded.updated_at`,
+		ex, now, op, rsn, now,
+	)
+	if err != nil {
+		return "", err
+	}
+	return now, nil
 }
 
 func (s *Store) OpenOrders() ([]string, error) {

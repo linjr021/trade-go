@@ -5,6 +5,7 @@ import {
   FlaskConical,
   History,
   Settings2,
+  ShieldCheck,
   Wallet,
 } from 'lucide-react'
 import { fmtTime } from '@/modules/format'
@@ -58,6 +59,7 @@ import {
   saveSkillWorkflow,
   resetSkillWorkflow,
   runAutoStrategyRegenNow,
+  resetRiskBaseline,
   getLLMUsageLogs,
   runBacktestApi,
   getBacktestHistory,
@@ -125,6 +127,15 @@ const LEGACY_WORKFLOW_STEP_NAME_MAP = {
   Optimizer: '参数优化',
   RiskReviewer: '风险复核',
   ReleasePackager: '发布打包',
+}
+
+type CoreRiskSettings = {
+  maxRiskPerTradePct: number
+  maxPositionPct: number
+  maxConsecutiveLosses: number
+  maxDailyLossPct: number
+  maxDrawdownPct: number
+  liquidationBufferPct: number
 }
 
 function isDeprecatedBuiltinStrategyName(name) {
@@ -438,6 +449,18 @@ export function useDashboardController() {
   const [systemSaveHint, setSystemSaveHint] = useState('')
   const [savingAutoReviewSettings, setSavingAutoReviewSettings] = useState(false)
   const [autoReviewSaveHint, setAutoReviewSaveHint] = useState('')
+  const [coreRiskSettings, setCoreRiskSettings] = useState<CoreRiskSettings>({
+    maxRiskPerTradePct: 1,
+    maxPositionPct: 20,
+    maxConsecutiveLosses: 3,
+    maxDailyLossPct: 5,
+    maxDrawdownPct: 12,
+    liquidationBufferPct: 2,
+  })
+  const coreRiskDirtyRef = useRef(false)
+  const [savingCoreRiskSettings, setSavingCoreRiskSettings] = useState(false)
+  const [coreRiskSaveHint, setCoreRiskSaveHint] = useState('')
+  const [resettingRiskBaseline, setResettingRiskBaseline] = useState(false)
   const [toast, setToast] = useState({ visible: false, type: 'success', message: '' })
 
   const [builderTab, setBuilderTab] = useState('generate')
@@ -541,6 +564,10 @@ export function useDashboardController() {
     liveSettingsDirtyRef.current = true
     setSettings(updater)
   }, [])
+  const setCoreRiskField = useCallback((key: keyof CoreRiskSettings, value: number) => {
+    coreRiskDirtyRef.current = true
+    setCoreRiskSettings((old) => ({ ...old, [key]: value }))
+  }, [])
   const sidebarMenuItems = useMemo(
     () => [
       { key: 'assets', label: '资产详情', icon: <Wallet size={16} /> },
@@ -549,6 +576,7 @@ export function useDashboardController() {
       { key: 'skill_workflow', label: 'AI 工作流', icon: <Bot size={16} /> },
       { key: 'builder', label: '策略生成', icon: <Bot size={16} /> },
       { key: 'backtest', label: '历史回测', icon: <History size={16} /> },
+      { key: 'auth_admin', label: '权限审计', icon: <ShieldCheck size={16} />, permModule: 'auth_admin' },
       { key: 'system', label: '系统设置', icon: <Settings2 size={16} /> },
     ],
     [],
@@ -641,6 +669,17 @@ export function useDashboardController() {
             lowConfidenceMarginPct: Number(cfg.low_confidence_margin_pct ?? 0) * 100,
             leverage: Number(cfg.leverage ?? old.leverage ?? 20),
           }),
+        }))
+      }
+      if (!coreRiskDirtyRef.current) {
+        setCoreRiskSettings((old) => ({
+          ...old,
+          maxRiskPerTradePct: normalizeDecimal(Number(cfg.max_risk_per_trade_pct ?? 0.01) * 100, 0.01, 100),
+          maxPositionPct: normalizeDecimal(Number(cfg.max_position_pct ?? 0.2) * 100, 0.01, 100),
+          maxConsecutiveLosses: Math.max(0, Math.round(Number(cfg.max_consecutive_losses ?? 3))),
+          maxDailyLossPct: normalizeDecimal(Number(cfg.max_daily_loss_pct ?? 0.05) * 100, 0.01, 100),
+          maxDrawdownPct: normalizeDecimal(Number(cfg.max_drawdown_pct ?? 0.12) * 100, 0.01, 100),
+          liquidationBufferPct: normalizeDecimal(Number(cfg.liquidation_buffer_pct ?? 0.02) * 100, 0.01, 100),
         }))
       }
       if (cfg?.symbol) {
@@ -1730,6 +1769,64 @@ export function useDashboardController() {
     }
   }
 
+  const saveCoreRiskSettings = async () => {
+    setSavingCoreRiskSettings(true)
+    setCoreRiskSaveHint('')
+    setError('')
+    try {
+      const normalized = {
+        maxRiskPerTradePct: normalizeDecimal(Number(coreRiskSettings?.maxRiskPerTradePct || 0), 0.01, 100),
+        maxPositionPct: normalizeDecimal(Number(coreRiskSettings?.maxPositionPct || 0), 0.01, 100),
+        maxConsecutiveLosses: Math.max(0, Math.round(Number(coreRiskSettings?.maxConsecutiveLosses || 0))),
+        maxDailyLossPct: normalizeDecimal(Number(coreRiskSettings?.maxDailyLossPct || 0), 0.01, 100),
+        maxDrawdownPct: normalizeDecimal(Number(coreRiskSettings?.maxDrawdownPct || 0), 0.01, 100),
+        liquidationBufferPct: normalizeDecimal(Number(coreRiskSettings?.liquidationBufferPct || 0), 0.01, 100),
+      }
+      setCoreRiskSettings(normalized)
+      await updateSettings({
+        max_risk_per_trade_pct: normalized.maxRiskPerTradePct / 100,
+        max_position_pct: normalized.maxPositionPct / 100,
+        max_consecutive_losses: normalized.maxConsecutiveLosses,
+        max_daily_loss_pct: normalized.maxDailyLossPct / 100,
+        max_drawdown_pct: normalized.maxDrawdownPct / 100,
+        liquidation_buffer_pct: normalized.liquidationBufferPct / 100,
+      })
+      coreRiskDirtyRef.current = false
+      setCoreRiskSaveHint(`已保存 ${new Date().toLocaleTimeString()}`)
+      showToast('success', '核心风控参数保存成功')
+      await refreshCore(true)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '核心风控参数保存失败'
+      setCoreRiskSaveHint('')
+      setError(reason)
+      showToast('error', `保存失败：${reason}`)
+    } finally {
+      setSavingCoreRiskSettings(false)
+    }
+  }
+
+  const resetRiskManually = async () => {
+    const confirmed = window.prompt('这是危险操作。输入 RESET 确认手动解除风控：', '')
+    if (String(confirmed || '').trim().toUpperCase() !== 'RESET') {
+      return
+    }
+    setResettingRiskBaseline(true)
+    setError('')
+    try {
+      const reason = `manual_ui_reset_${Date.now()}`
+      const res = await resetRiskBaseline({ reason })
+      const at = String(res?.data?.reset_at || '').trim()
+      showToast('success', at ? `已解除风控基线（${fmtTime(at)}）` : '已解除风控基线')
+      await refreshCore(true)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '解除失败'
+      setError(reason)
+      showToast('error', `解除失败：${reason}`)
+    } finally {
+      setResettingRiskBaseline(false)
+    }
+  }
+
   const handleAddLLM = async () => {
     setAddingLLM(true)
     setError('')
@@ -2713,6 +2810,13 @@ export function useDashboardController() {
     setAiWorkflowLogChannel,
     aiWorkflowLogLimit,
     setAiWorkflowLogLimit,
+    coreRiskSettings,
+    setCoreRiskField,
+    savingCoreRiskSettings,
+    coreRiskSaveHint,
+    saveCoreRiskSettings,
+    resettingRiskBaseline,
+    resetRiskManually,
     autoReviewSaveHint,
     savingAutoReviewSettings,
     saveAutoReviewEnv,

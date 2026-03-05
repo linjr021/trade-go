@@ -1,4 +1,5 @@
 import { AssetsPageSection } from '@/modules/assets-page-section'
+import { AuthAdminPanel } from '@/modules/auth-admin-panel'
 import { BacktestPageSection, BuilderPageSection, SkillWorkflowPageSection } from '@/modules/builder-backtest-sections'
 import { LivePageSection, PaperPageSection } from '@/modules/live-paper-sections'
 import { SystemPageSection } from '@/modules/system-page-section'
@@ -163,6 +164,13 @@ export function DashboardContent({ c, renderOverviewCards }) {
           setAiWorkflowLogChannel={c.setAiWorkflowLogChannel}
           aiWorkflowLogLimit={c.aiWorkflowLogLimit}
           setAiWorkflowLogLimit={c.setAiWorkflowLogLimit}
+          coreRiskSettings={c.coreRiskSettings}
+          setCoreRiskField={c.setCoreRiskField}
+          savingCoreRiskSettings={c.savingCoreRiskSettings}
+          coreRiskSaveHint={c.coreRiskSaveHint}
+          saveCoreRiskSettings={c.saveCoreRiskSettings}
+          resettingRiskBaseline={c.resettingRiskBaseline}
+          resetRiskManually={c.resetRiskManually}
           autoReviewFields={autoReviewFields}
           systemSettings={c.systemSettings}
           setSystemSettings={c.setSystemSettings}
@@ -234,6 +242,10 @@ export function DashboardContent({ c, renderOverviewCards }) {
           removeBacktestHistory={c.removeBacktestHistory}
           btRecords={c.btRecords}
         />
+      )}
+
+      {c.menu === 'auth_admin' && (
+        <AuthAdminPanel inline />
       )}
 
       {c.menu === 'system' && (

@@ -35,6 +35,12 @@ type paperRuntimeConfig struct {
 	HighConfidenceMarginPct float64  `json:"high_confidence_margin_pct"`
 	LowConfidenceMarginPct  float64  `json:"low_confidence_margin_pct"`
 	Leverage                int      `json:"leverage"`
+	MaxRiskPerTradePct      float64  `json:"max_risk_per_trade_pct"`
+	MaxPositionPct          float64  `json:"max_position_pct"`
+	MaxConsecutiveLosses    int      `json:"max_consecutive_losses"`
+	MaxDailyLossPct         float64  `json:"max_daily_loss_pct"`
+	MaxDrawdownPct          float64  `json:"max_drawdown_pct"`
+	LiquidationBufferPct    float64  `json:"liquidation_buffer_pct"`
 	EnabledStrategies       []string `json:"enabled_strategies"`
 	IntervalSec             int      `json:"interval_sec"`
 }
@@ -93,6 +99,12 @@ type paperConfigPatch struct {
 	HighConfidenceMarginPct *float64  `json:"high_confidence_margin_pct"`
 	LowConfidenceMarginPct  *float64  `json:"low_confidence_margin_pct"`
 	Leverage                *int      `json:"leverage"`
+	MaxRiskPerTradePct      *float64  `json:"max_risk_per_trade_pct"`
+	MaxPositionPct          *float64  `json:"max_position_pct"`
+	MaxConsecutiveLosses    *int      `json:"max_consecutive_losses"`
+	MaxDailyLossPct         *float64  `json:"max_daily_loss_pct"`
+	MaxDrawdownPct          *float64  `json:"max_drawdown_pct"`
+	LiquidationBufferPct    *float64  `json:"liquidation_buffer_pct"`
 	EnabledStrategies       *[]string `json:"enabled_strategies"`
 	IntervalSec             *int      `json:"interval_sec"`
 }
@@ -168,6 +180,12 @@ func (s *Service) defaultPaperRuntimeConfig() paperRuntimeConfig {
 		HighConfidenceMarginPct: cfg.HighConfidenceMarginPct * 100,
 		LowConfidenceMarginPct:  cfg.LowConfidenceMarginPct * 100,
 		Leverage:                cfg.Leverage,
+		MaxRiskPerTradePct:      cfg.MaxRiskPerTradePct,
+		MaxPositionPct:          cfg.MaxPositionPct,
+		MaxConsecutiveLosses:    cfg.MaxConsecutiveLosses,
+		MaxDailyLossPct:         cfg.MaxDailyLossPct,
+		MaxDrawdownPct:          cfg.MaxDrawdownPct,
+		LiquidationBufferPct:    cfg.LiquidationBufferPct,
 		EnabledStrategies:       enabled,
 		IntervalSec:             paperDefaultInterval,
 	}
@@ -295,6 +313,56 @@ func (s *Service) normalizePaperRuntimeConfig(in paperRuntimeConfig, fallback pa
 	if out.Leverage > 150 {
 		out.Leverage = 150
 	}
+
+	if !isFinite(out.MaxRiskPerTradePct) || out.MaxRiskPerTradePct <= 0 {
+		out.MaxRiskPerTradePct = fallback.MaxRiskPerTradePct
+	}
+	if !isFinite(out.MaxRiskPerTradePct) || out.MaxRiskPerTradePct <= 0 {
+		out.MaxRiskPerTradePct = 0.01
+	}
+	out.MaxRiskPerTradePct = paperClamp(out.MaxRiskPerTradePct, 0.0001, 1)
+
+	if !isFinite(out.MaxPositionPct) || out.MaxPositionPct <= 0 {
+		out.MaxPositionPct = fallback.MaxPositionPct
+	}
+	if !isFinite(out.MaxPositionPct) || out.MaxPositionPct <= 0 {
+		out.MaxPositionPct = 0.20
+	}
+	out.MaxPositionPct = paperClamp(out.MaxPositionPct, 0.0001, 1)
+
+	if out.MaxConsecutiveLosses < 0 {
+		out.MaxConsecutiveLosses = fallback.MaxConsecutiveLosses
+	}
+	if out.MaxConsecutiveLosses < 0 {
+		out.MaxConsecutiveLosses = 3
+	}
+	if out.MaxConsecutiveLosses > 100 {
+		out.MaxConsecutiveLosses = 100
+	}
+
+	if !isFinite(out.MaxDailyLossPct) || out.MaxDailyLossPct <= 0 {
+		out.MaxDailyLossPct = fallback.MaxDailyLossPct
+	}
+	if !isFinite(out.MaxDailyLossPct) || out.MaxDailyLossPct <= 0 {
+		out.MaxDailyLossPct = 0.05
+	}
+	out.MaxDailyLossPct = paperClamp(out.MaxDailyLossPct, 0.0001, 1)
+
+	if !isFinite(out.MaxDrawdownPct) || out.MaxDrawdownPct <= 0 {
+		out.MaxDrawdownPct = fallback.MaxDrawdownPct
+	}
+	if !isFinite(out.MaxDrawdownPct) || out.MaxDrawdownPct <= 0 {
+		out.MaxDrawdownPct = 0.12
+	}
+	out.MaxDrawdownPct = paperClamp(out.MaxDrawdownPct, 0.0001, 1)
+
+	if !isFinite(out.LiquidationBufferPct) || out.LiquidationBufferPct <= 0 {
+		out.LiquidationBufferPct = fallback.LiquidationBufferPct
+	}
+	if !isFinite(out.LiquidationBufferPct) || out.LiquidationBufferPct <= 0 {
+		out.LiquidationBufferPct = 0.02
+	}
+	out.LiquidationBufferPct = paperClamp(out.LiquidationBufferPct, 0.0001, 1)
 
 	if out.IntervalSec <= 0 {
 		out.IntervalSec = fallback.IntervalSec
@@ -515,6 +583,24 @@ func (s *Service) applyPaperConfigPatch(req paperConfigPatch, source string) (pa
 	if req.Leverage != nil {
 		next.Leverage = *req.Leverage
 	}
+	if req.MaxRiskPerTradePct != nil {
+		next.MaxRiskPerTradePct = *req.MaxRiskPerTradePct
+	}
+	if req.MaxPositionPct != nil {
+		next.MaxPositionPct = *req.MaxPositionPct
+	}
+	if req.MaxConsecutiveLosses != nil {
+		next.MaxConsecutiveLosses = *req.MaxConsecutiveLosses
+	}
+	if req.MaxDailyLossPct != nil {
+		next.MaxDailyLossPct = *req.MaxDailyLossPct
+	}
+	if req.MaxDrawdownPct != nil {
+		next.MaxDrawdownPct = *req.MaxDrawdownPct
+	}
+	if req.LiquidationBufferPct != nil {
+		next.LiquidationBufferPct = *req.LiquidationBufferPct
+	}
 	if req.EnabledStrategies != nil {
 		next.EnabledStrategies = append([]string{}, (*req.EnabledStrategies)...)
 	}
@@ -557,6 +643,12 @@ func (s *Service) makePaperStrategyHistoryEntry(strategies []string, cfg paperRu
 		"lowConfidenceAmount":     cfg.LowConfidenceAmount,
 		"highConfidenceMarginPct": cfg.HighConfidenceMarginPct,
 		"lowConfidenceMarginPct":  cfg.LowConfidenceMarginPct,
+		"maxRiskPerTradePct":      cfg.MaxRiskPerTradePct,
+		"maxPositionPct":          cfg.MaxPositionPct,
+		"maxConsecutiveLosses":    cfg.MaxConsecutiveLosses,
+		"maxDailyLossPct":         cfg.MaxDailyLossPct,
+		"maxDrawdownPct":          cfg.MaxDrawdownPct,
+		"liquidationBufferPct":    cfg.LiquidationBufferPct,
 	}
 	now := time.Now().Format(time.RFC3339)
 	return paperStrategyHistoryEntry{
@@ -634,7 +726,9 @@ func (s *Service) handlePaperStart(w http.ResponseWriter, r *http.Request) {
 	if req.Symbol != nil || req.Balance != nil || req.PositionSizingMode != nil ||
 		req.HighConfidenceAmount != nil || req.LowConfidenceAmount != nil ||
 		req.HighConfidenceMarginPct != nil || req.LowConfidenceMarginPct != nil ||
-		req.Leverage != nil || req.EnabledStrategies != nil || req.IntervalSec != nil {
+		req.Leverage != nil || req.MaxRiskPerTradePct != nil || req.MaxPositionPct != nil ||
+		req.MaxConsecutiveLosses != nil || req.MaxDailyLossPct != nil || req.MaxDrawdownPct != nil ||
+		req.LiquidationBufferPct != nil || req.EnabledStrategies != nil || req.IntervalSec != nil {
 		if _, err := s.applyPaperConfigPatch(req, "paper_start"); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -773,6 +867,7 @@ func (s *Service) runPaperCycle() {
 	s.mu.RLock()
 	cfg := s.paperState.Config
 	running := s.paperState.Running
+	riskSnap := buildPaperRiskSnapshot(s.paperState.Records, cfg.Symbol, cfg.Balance)
 	s.mu.RUnlock()
 	if !running {
 		return
@@ -787,6 +882,16 @@ func (s *Service) runPaperCycle() {
 		HighConfidenceMarginPct: cfg.HighConfidenceMarginPct,
 		LowConfidenceMarginPct:  cfg.LowConfidenceMarginPct,
 		Leverage:                cfg.Leverage,
+		MaxRiskPerTradePct:      cfg.MaxRiskPerTradePct,
+		MaxPositionPct:          cfg.MaxPositionPct,
+		MaxConsecutiveLosses:    cfg.MaxConsecutiveLosses,
+		MaxDailyLossPct:         cfg.MaxDailyLossPct,
+		MaxDrawdownPct:          cfg.MaxDrawdownPct,
+		LiquidationBufferPct:    cfg.LiquidationBufferPct,
+		RiskTodayPnL:            riskSnap.TodayPnL,
+		RiskPeakEquity:          riskSnap.PeakEquity,
+		RiskCurrentEquity:       riskSnap.CurrentEquity,
+		RiskConsecutiveLosses:   riskSnap.ConsecutiveLosses,
 		EnabledStrategies:       append([]string{}, cfg.EnabledStrategies...),
 	}
 
@@ -876,6 +981,67 @@ func buildPaperTradeRecord(result trader.PaperSimulationResult, existing []paper
 		RiskReason:    strings.TrimSpace(result.RiskReason),
 		ExecutionCode: strings.TrimSpace(result.ExecutionCode),
 	}
+}
+
+type paperRiskSnapshot struct {
+	TodayPnL          float64
+	PeakEquity        float64
+	CurrentEquity     float64
+	ConsecutiveLosses int
+}
+
+func buildPaperRiskSnapshot(records []paperTradeRecord, symbol string, baseBalance float64) paperRiskSnapshot {
+	base := baseBalance
+	if !isFinite(base) || base <= 0 {
+		base = paperDefaultSimBalance
+	}
+	target := strings.ToUpper(strings.TrimSpace(symbol))
+	snap := paperRiskSnapshot{
+		TodayPnL:          0,
+		PeakEquity:        base,
+		CurrentEquity:     base,
+		ConsecutiveLosses: 0,
+	}
+	today := time.Now().Format("2006-01-02")
+	equity := base
+	for i := len(records) - 1; i >= 0; i-- {
+		row := records[i]
+		rowSymbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
+		if target != "" && rowSymbol != "" && rowSymbol != target {
+			continue
+		}
+		pnl := row.UnrealizedPnL
+		if !isFinite(pnl) {
+			continue
+		}
+		equity += pnl
+		if equity > snap.PeakEquity {
+			snap.PeakEquity = equity
+		}
+		if strings.HasPrefix(strings.TrimSpace(row.TS), today) {
+			snap.TodayPnL += pnl
+		}
+	}
+	snap.CurrentEquity = equity
+	if snap.PeakEquity < snap.CurrentEquity {
+		snap.PeakEquity = snap.CurrentEquity
+	}
+	for _, row := range records {
+		rowSymbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
+		if target != "" && rowSymbol != "" && rowSymbol != target {
+			continue
+		}
+		pnl := row.UnrealizedPnL
+		if !isFinite(pnl) {
+			continue
+		}
+		if pnl < 0 {
+			snap.ConsecutiveLosses++
+			continue
+		}
+		break
+	}
+	return snap
 }
 
 func calcPaperRuntimePnL(signal string, lastPrice, currentPrice, size float64) float64 {
