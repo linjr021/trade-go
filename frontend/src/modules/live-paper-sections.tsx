@@ -76,6 +76,74 @@ function executionStatusText(code, approved, signal) {
   return '-'
 }
 
+function classifyOpenDecision(code, signal, approved, reason) {
+  if (approved === true) {
+    return { text: '可开仓', guide: '当前条件已通过，可继续观察执行结果。' }
+  }
+  const c = String(code || '').trim().toLowerCase()
+  const s = String(signal || '').trim().toUpperCase()
+  const r = String(reason || '').trim()
+  const rl = r.toLowerCase()
+
+  const signalFallback = (
+    c === 'paper_strategy_fallback' ||
+    c === 'insufficient_signal' ||
+    c === 'strategy_fallback' ||
+    rl.includes('insufficient_signal') ||
+    rl.includes('信号不足') ||
+    rl.includes('回退')
+  )
+  if (signalFallback || s === 'HOLD') {
+    return {
+      text: '信号回退阻断',
+      guide: '去「策略生成」优化规则，或在「AI 工作流 -> 流程配置/提示词」增强信号触发条件。',
+    }
+  }
+
+  const riskBlocked = (
+    c === 'paper_risk_blocked' ||
+    c === 'risk_blocked' ||
+    c === 'global_stop_active' ||
+    rl.includes('建议仓位为0') ||
+    rl.includes('风控') ||
+    rl.includes('连续亏损') ||
+    rl.includes('最大回撤') ||
+    rl.includes('当日亏损') ||
+    rl.includes('止损距离过近')
+  )
+  if (riskBlocked) {
+    return {
+      text: '风控规则阻断',
+      guide: '去「AI 工作流 -> 核心风控」和「实盘/模拟交易」参数区调整仓位、杠杆、低/高信心阈值。',
+    }
+  }
+
+  const precheckBlocked = (
+    c === 'order_plan_invalid' ||
+    c === 'insufficient_margin' ||
+    c === 'balance_unavailable' ||
+    c === 'reverse_guard_low_confidence' ||
+    c === 'reverse_guard_repeat_signal' ||
+    rl.includes('保证金不足') ||
+    rl.includes('余额') ||
+    rl.includes('order_plan')
+  )
+  if (precheckBlocked) {
+    return {
+      text: '下单前校验阻断',
+      guide: '去「实盘/模拟交易」检查交易对、仓位模式、保证金、杠杆和账户可用余额。',
+    }
+  }
+
+  if (approved === false) {
+    return {
+      text: '执行校验阻断',
+      guide: '优先查看“理由”，再到「策略生成」或「交易参数」对照调整。',
+    }
+  }
+  return { text: '-', guide: '-' }
+}
+
 function StrategyRuntimeTab({
   currentStrategies = [],
   strategyHistory = [],
@@ -110,7 +178,9 @@ function StrategyRuntimeTab({
   const previewTP = fmtPrice(preview?.takeProfit, 2)
   const previewApproved = typeof preview?.approved === 'boolean' ? preview.approved : null
   const previewExecuted = typeof preview?.executed === 'boolean' ? preview.executed : null
-  const previewApprovedText = previewApproved == null ? '-' : (previewApproved ? '可开仓' : '风控阻断')
+  const previewExecutionCode = String(preview?.executionCode || '').trim()
+  const decision = classifyOpenDecision(previewExecutionCode, previewSignal, previewApproved, previewReason)
+  const previewApprovedText = decision.text
   const previewExecutedText = previewExecuted == null ? '-' : (previewExecuted ? '已执行' : '未执行')
   const currentExecutionStatus = String(preview?.currentExecutionStatus || '').trim() || previewExecutedText
   const lastExecutionStatus = String(preview?.lastExecutionStatus || '').trim() || '-'
@@ -156,6 +226,7 @@ function StrategyRuntimeTab({
             <p><span>建议数量</span><b>{previewSuggestedSize}</b></p>
             <p><span>风控后数量</span><b>{previewApprovedSize}</b></p>
             <p className="full"><span>理由</span><b>{previewReason}</b></p>
+            <p className="full"><span>调整入口</span><b>{decision.guide}</b></p>
           </div>
         </div>
         <div className="strategy-runtime-history">
@@ -286,6 +357,7 @@ export function LivePageSection(p) {
       approved: typeof previewApproved === 'boolean' ? previewApproved : null,
       executed: typeof previewExecuted === 'boolean' ? previewExecuted : null,
       currentExecutionStatus: executionStatusText(previewExecutionCode, previewApproved, previewSignal),
+      executionCode: previewExecutionCode,
       lastExecutionStatus: liveLastExecuted
         ? `已执行（${formatBeijingClock(liveLastExecuted?.ts)}）`
         : '暂无已执行记录',
@@ -606,6 +678,7 @@ export function PaperPageSection(p) {
         ? null
         : (executedCode === 'paper_simulated' || executedCode === 'simulated'),
       currentExecutionStatus: executionStatusText(executedCode, approved, signal),
+      executionCode: executedCode,
       lastExecutionStatus: lastPaperRecord
         ? `已执行（${formatBeijingClock(lastPaperRecord?.ts)}）`
         : '暂无已执行记录',
