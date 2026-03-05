@@ -784,15 +784,20 @@ func validateLLMIntegration(cfg llmIntegration) error {
 	// Prefer lightweight model-list validation to avoid slow chat completion round-trips.
 	models, _, _, _, reachable, _, modelErr := fetchLLMModelList(cfg.Product, cfg.BaseURL, cfg.APIKey)
 	if modelErr == nil && reachable {
-		if len(models) == 0 {
-			return nil
-		}
-		for _, item := range models {
-			if strings.TrimSpace(item) == model {
-				return nil
+		if len(models) > 0 {
+			found := false
+			for _, item := range models {
+				if strings.TrimSpace(item) == model {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("模型不可用: %s", model)
 			}
 		}
-		return fmt.Errorf("模型不可用: %s", model)
+		// 即使 /models 可达，也额外做一次 chat 预检，避免“可达但余额不足/无额度”被误判。
+		return validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model)
 	}
 
 	// Fallback for providers that may not expose /models in a compatible way.
@@ -800,7 +805,11 @@ func validateLLMIntegration(cfg llmIntegration) error {
 		return modelErr
 	}
 
-	endpoint, err := llmapi.ResolveChatEndpoint(cfg.BaseURL)
+	return validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model)
+}
+
+func validateLLMChatCompletion(baseURL, apiKey, model string) error {
+	endpoint, err := llmapi.ResolveChatEndpoint(baseURL)
 	if err != nil {
 		return err
 	}
@@ -819,7 +828,7 @@ func validateLLMIntegration(cfg llmIntegration) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	cli := &http.Client{Timeout: 20 * time.Second}
 	resp, err := cli.Do(req)
 	if err != nil {

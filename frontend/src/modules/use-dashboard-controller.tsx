@@ -2214,6 +2214,7 @@ export function useDashboardController() {
         res = await generateStrategyPreference(payload)
       }
       const usedFallback = Boolean(res?.data?.fallback)
+      const fallbackReason = String(res?.data?.fallback_reason || '').trim()
       const generated = res?.data?.generated || {}
       const skillPackage = res?.data?.skill_package || null
       const baseName =
@@ -2297,7 +2298,10 @@ export function useDashboardController() {
       if (!btStrategy) setBtStrategy(rule.name)
       await activateGeneratedForExecution(rule.name, backendEnabled)
       if (usedFallback) {
-        showToast('warning', '策略已生成（智能体未接入或调用失败，使用模板回退）')
+        const msg = fallbackReason
+          ? `策略已生成（模板回退）：${fallbackReason}`
+          : '策略已生成（智能体未接入或调用失败，使用模板回退）'
+        showToast('warning', msg)
       } else {
         showToast('success', baseName !== rule.name ? `策略生成成功（已自动命名为 ${rule.name}）` : '策略生成成功')
       }

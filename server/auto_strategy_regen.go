@@ -153,7 +153,7 @@ func (s *Service) generateAutoStrategy(reason string, drawdown float64, rs stora
 		directionBias = "short_only"
 	}
 
-	gen, _ := generatePreferenceByLLM(
+	gen, _, _ := generatePreferenceByLLM(
 		symbol,
 		habit,
 		tf,

@@ -131,6 +131,7 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusOK, map[string]any{
 			"generated":            finalGenerated,
 			"fallback":             true,
+			"fallback_reason":      "行情抓取失败，回退模板生成",
 			"skill_package":        skillPkg,
 			"auto_activated":       true,
 			"active_strategy":      stored.Name,
@@ -180,7 +181,7 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 		marketView,
 	)
 
-	gen, usedFallback := generatePreferenceByLLM(
+	gen, usedFallback, fallbackReason := generatePreferenceByLLM(
 		symbol, habit, f, cur.Close, change, trend.Overall, ind, levels,
 		style, minRR, req.AllowReversal, lowConfAction, directionBias, tradeCfg,
 	)
@@ -192,6 +193,7 @@ func (s *Service) handleGenerateStrategyPreference(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generated":            finalGenerated,
 		"fallback":             usedFallback,
+		"fallback_reason":      strings.TrimSpace(fallbackReason),
 		"skill_package":        skillPkg,
 		"auto_activated":       true,
 		"active_strategy":      stored.Name,
@@ -244,7 +246,7 @@ func generatePreferenceByLLM(
 	lowConfAction string,
 	directionBias string,
 	tradeCfg config.TradeConfig,
-) (generatedPreference, bool) {
+) (generatedPreference, bool, string) {
 	apiKey := strings.TrimSpace(config.Config.AIAPIKey)
 	baseURL := strings.TrimSpace(config.Config.AIBaseURL)
 	model := strings.TrimSpace(config.Config.AIModel)
@@ -252,7 +254,8 @@ func generatePreferenceByLLM(
 		model = "chat-model"
 	}
 	if apiKey == "" || baseURL == "" {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI未配置，回退模板生成", tradeCfg), true
+		reason := "AI未配置，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 
 	workflowCfg := loadSkillWorkflowConfig()
@@ -328,19 +331,22 @@ func generatePreferenceByLLM(
 	}
 	endpoint, err := llmapi.ResolveChatEndpoint(baseURL)
 	if err != nil {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI_BASE_URL配置错误，回退模板生成", tradeCfg), true
+		reason := "AI_BASE_URL配置错误，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	rawReq, _ := json.Marshal(body)
 	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(rawReq))
 	if err != nil {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "请求构建失败，回退模板生成", tradeCfg), true
+		reason := "请求构建失败，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	cli := &http.Client{Timeout: 45 * time.Second}
 	resp, err := cli.Do(httpReq)
 	if err != nil {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI请求失败，回退模板生成", tradeCfg), true
+		reason := "AI请求失败，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	defer resp.Body.Close()
 	rawResp, _ := io.ReadAll(resp.Body)
@@ -353,21 +359,25 @@ func generatePreferenceByLLM(
 			}
 			reason += ": " + bodyText
 		}
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason+"，回退模板生成", tradeCfg), true
+		finalReason := reason + "，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, finalReason, tradeCfg), true, finalReason
 	}
 	var chat llmChatResponse
 	if err := json.Unmarshal(rawResp, &chat); err != nil || len(chat.Choices) == 0 {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI解析失败，回退模板生成", tradeCfg), true
+		reason := "AI解析失败，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	content := chat.Choices[0].Message.Content
 	recordLLMUsageWithMeta("strategy_generator", model, mustJSON(prompt), content)
 	obj, ok := extractJSONObject(content)
 	if !ok {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI未输出JSON，回退模板生成", tradeCfg), true
+		reason := "AI未输出JSON，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	var out generatedPreference
 	if err := json.Unmarshal([]byte(obj), &out); err != nil {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI JSON无效，回退模板生成", tradeCfg), true
+		reason := "AI JSON无效，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	out.StrategyName = strings.TrimSpace(out.StrategyName)
 	out.PreferencePrompt = strings.TrimSpace(out.PreferencePrompt)
@@ -375,13 +385,14 @@ func generatePreferenceByLLM(
 	out.Logic = strings.TrimSpace(out.Logic)
 	out.Basis = strings.TrimSpace(out.Basis)
 	if out.PreferencePrompt == "" || out.GeneratorPrompt == "" {
-		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, "AI内容不完整，回退模板生成", tradeCfg), true
+		reason := "AI内容不完整，回退模板生成"
+		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, reason, tradeCfg), true, reason
 	}
 	if !strings.Contains(out.GeneratorPrompt, "${symbol}") || !strings.Contains(out.GeneratorPrompt, "${habit}") {
 		out.GeneratorPrompt = ensureGeneratorVars(out.GeneratorPrompt)
 	}
 	out.StrategyName = buildStandardStrategyName(symbol, habit, style, false)
-	return out, false
+	return out, false, ""
 }
 
 func fallbackGeneratedPreference(
