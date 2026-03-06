@@ -80,6 +80,7 @@ export const generateStrategyPreference = (payload: Record<string, any>) =>
   http.post('/strategy-preference/generate', payload, { timeout: 120000 })
 export const getSkillWorkflow = () => http.get('/skill-workflow')
 export const saveSkillWorkflow = (workflow: Record<string, any>) => http.post('/skill-workflow', { workflow })
+export const saveAISettings = (payload: Record<string, any>) => http.post('/skill-workflow', payload)
 export const resetSkillWorkflow = () => http.post('/skill-workflow', { reset_default: true })
 export const getLLMUsageLogs = (params: Record<string, any> = {}) => http.get('/llm-usage/logs', { params })
 export const runAutoStrategyRegenNow = (payload: Record<string, any> = {}) =>

@@ -39,13 +39,23 @@ type strategySkillPackage struct {
 }
 
 func normalizeHabitInput(h string) string {
-	switch strings.TrimSpace(strings.ToLower(h)) {
-	case "10m":
-		return "10m"
-	case "1h":
+	raw := strings.TrimSpace(h)
+	if raw == "" {
 		return "1h"
-	case "4h":
-		return "4h"
+	}
+	key := strings.ToLower(raw)
+	profiles := loadHabitProfiles()
+	for _, p := range profiles {
+		if strings.EqualFold(strings.TrimSpace(p.Habit), raw) {
+			return strings.TrimSpace(p.Habit)
+		}
+	}
+	for _, p := range profiles {
+		if strings.ToLower(strings.TrimSpace(p.Habit)) == key {
+			return strings.TrimSpace(p.Habit)
+		}
+	}
+	switch key {
 	case "1d":
 		return "1D"
 	case "5d":
@@ -55,120 +65,33 @@ func normalizeHabitInput(h string) string {
 	case "90d":
 		return "90D"
 	default:
-		return "1h"
+		return strings.TrimSpace(raw)
 	}
 }
 
 func habitProfileOf(habit string) habitProfile {
-	switch normalizeHabitInput(habit) {
-	case "10m":
-		return habitProfile{
-			Habit:             "10m",
-			Label:             "超短线",
-			Timeframe:         "15m",
-			MaxLeverage:       30,
-			MaxDrawdownPct:    0.04,
-			MaxRiskPerTrade:   0.008,
-			AllowAddPosition:  false,
-			HoldBarsMin:       1,
-			HoldBarsMax:       16,
-			Description:       "高频、轻仓、快进快出，优先执行明确触发条件。",
-			ExecutionHint:     "触发条件不完整时保持 HOLD，减少噪音交易。",
-			PreferredDataSpan: 120,
+	normalized := normalizeHabitInput(habit)
+	profiles := loadHabitProfiles()
+	for _, p := range profiles {
+		if strings.EqualFold(strings.TrimSpace(p.Habit), normalized) {
+			return p
 		}
-	case "1h":
-		return habitProfile{
-			Habit:             "1h",
-			Label:             "日内短线",
-			Timeframe:         "1h",
-			MaxLeverage:       20,
-			MaxDrawdownPct:    0.06,
-			MaxRiskPerTrade:   0.010,
-			AllowAddPosition:  true,
-			HoldBarsMin:       2,
-			HoldBarsMax:       24,
-			Description:       "兼顾趋势与结构，适合主流交易对日内执行。",
-			ExecutionHint:     "信号冲突时优先观望，等待关键位确认。",
-			PreferredDataSpan: 160,
-		}
-	case "4h":
-		return habitProfile{
-			Habit:             "4h",
-			Label:             "波段",
-			Timeframe:         "4h",
-			MaxLeverage:       10,
-			MaxDrawdownPct:    0.08,
-			MaxRiskPerTrade:   0.012,
-			AllowAddPosition:  true,
-			HoldBarsMin:       4,
-			HoldBarsMax:       40,
-			Description:       "偏趋势波段，减少频繁交易，重视结构完整性。",
-			ExecutionHint:     "重点观察突破回踩与均线共振。",
-			PreferredDataSpan: 200,
-		}
-	case "1D":
-		return habitProfile{
-			Habit:             "1D",
-			Label:             "日线趋势",
-			Timeframe:         "1d",
-			MaxLeverage:       6,
-			MaxDrawdownPct:    0.10,
-			MaxRiskPerTrade:   0.015,
-			AllowAddPosition:  true,
-			HoldBarsMin:       3,
-			HoldBarsMax:       60,
-			Description:       "低频趋势策略，强调资金曲线稳定性。",
-			ExecutionHint:     "优先主趋势方向，逆势只做备选策略。",
-			PreferredDataSpan: 220,
-		}
-	case "5D":
-		return habitProfile{
-			Habit:             "5D",
-			Label:             "周内波段",
-			Timeframe:         "1d",
-			MaxLeverage:       5,
-			MaxDrawdownPct:    0.10,
-			MaxRiskPerTrade:   0.015,
-			AllowAddPosition:  true,
-			HoldBarsMin:       5,
-			HoldBarsMax:       90,
-			Description:       "周级别持仓，限制噪音交易与高杠杆。",
-			ExecutionHint:     "以趋势延续为主，设置明确失效条件。",
-			PreferredDataSpan: 240,
-		}
-	case "30D":
-		return habitProfile{
-			Habit:             "30D",
-			Label:             "中期配置",
-			Timeframe:         "1d",
-			MaxLeverage:       3,
-			MaxDrawdownPct:    0.12,
-			MaxRiskPerTrade:   0.020,
-			AllowAddPosition:  false,
-			HoldBarsMin:       12,
-			HoldBarsMax:       180,
-			Description:       "中周期配置，强调回撤控制与风险暴露。",
-			ExecutionHint:     "尽量减少频繁换向，趋势失效再切换。",
-			PreferredDataSpan: 280,
-		}
-	case "90D":
-		return habitProfile{
-			Habit:             "90D",
-			Label:             "长周期配置",
-			Timeframe:         "1d",
-			MaxLeverage:       2,
-			MaxDrawdownPct:    0.15,
-			MaxRiskPerTrade:   0.020,
-			AllowAddPosition:  false,
-			HoldBarsMin:       20,
-			HoldBarsMax:       260,
-			Description:       "长周期低频策略，优先风控与稳定收益。",
-			ExecutionHint:     "避免噪音驱动交易，严格执行风控停机。",
-			PreferredDataSpan: 320,
-		}
-	default:
-		return habitProfileOf("1h")
 	}
+	for _, p := range profiles {
+		if strings.EqualFold(strings.TrimSpace(p.Habit), "1h") {
+			return p
+		}
+	}
+	if len(profiles) > 0 {
+		return profiles[0]
+	}
+	defaults := defaultHabitProfiles()
+	for _, p := range defaults {
+		if strings.EqualFold(strings.TrimSpace(p.Habit), "1h") {
+			return p
+		}
+	}
+	return defaults[0]
 }
 
 func clampByProfile(value float64, min float64, max float64) float64 {

@@ -10,7 +10,10 @@
       "max_risk_per_trade_pct": 0.008,
       "allow_add_position": false,
       "hold_bars_min": 1,
-      "hold_bars_max": 16
+      "hold_bars_max": 16,
+      "description": "高频、轻仓、快进快出，优先执行明确触发条件。",
+      "execution_hint": "触发条件不完整时保持 HOLD，减少噪音交易。",
+      "preferred_data_span": 120
     },
     {
       "habit": "1h",
@@ -21,7 +24,10 @@
       "max_risk_per_trade_pct": 0.01,
       "allow_add_position": true,
       "hold_bars_min": 2,
-      "hold_bars_max": 24
+      "hold_bars_max": 24,
+      "description": "兼顾趋势与结构，适合主流交易对日内执行。",
+      "execution_hint": "信号冲突时优先观望，等待关键位确认。",
+      "preferred_data_span": 160
     },
     {
       "habit": "4h",
@@ -32,7 +38,10 @@
       "max_risk_per_trade_pct": 0.012,
       "allow_add_position": true,
       "hold_bars_min": 4,
-      "hold_bars_max": 40
+      "hold_bars_max": 40,
+      "description": "偏趋势波段，减少频繁交易，重视结构完整性。",
+      "execution_hint": "重点观察突破回踩与均线共振。",
+      "preferred_data_span": 200
     },
     {
       "habit": "1D",
@@ -43,7 +52,10 @@
       "max_risk_per_trade_pct": 0.015,
       "allow_add_position": true,
       "hold_bars_min": 3,
-      "hold_bars_max": 60
+      "hold_bars_max": 60,
+      "description": "低频趋势策略，强调资金曲线稳定性。",
+      "execution_hint": "优先主趋势方向，逆势只做备选策略。",
+      "preferred_data_span": 220
     },
     {
       "habit": "5D",
@@ -54,7 +66,10 @@
       "max_risk_per_trade_pct": 0.015,
       "allow_add_position": true,
       "hold_bars_min": 5,
-      "hold_bars_max": 90
+      "hold_bars_max": 90,
+      "description": "周级别持仓，限制噪音交易与高杠杆。",
+      "execution_hint": "以趋势延续为主，设置明确失效条件。",
+      "preferred_data_span": 240
     },
     {
       "habit": "30D",
@@ -65,7 +80,10 @@
       "max_risk_per_trade_pct": 0.02,
       "allow_add_position": false,
       "hold_bars_min": 12,
-      "hold_bars_max": 180
+      "hold_bars_max": 180,
+      "description": "中周期配置，强调回撤控制与风险暴露。",
+      "execution_hint": "尽量减少频繁换向，趋势失效再切换。",
+      "preferred_data_span": 280
     },
     {
       "habit": "90D",
@@ -76,7 +94,10 @@
       "max_risk_per_trade_pct": 0.02,
       "allow_add_position": false,
       "hold_bars_min": 20,
-      "hold_bars_max": 260
+      "hold_bars_max": 260,
+      "description": "长周期低频策略，优先风控与稳定收益。",
+      "execution_hint": "避免噪音驱动交易，严格执行风控停机。",
+      "preferred_data_span": 320
     }
   ]
 }

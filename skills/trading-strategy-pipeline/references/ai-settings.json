@@ -1,0 +1,204 @@
+{
+  "version": "ai-settings/v1",
+  "updated_at": "2026-03-06T15:20:09+08:00",
+  "workflow": {
+    "version": "skill-workflow/v1",
+    "updated_at": "2026-03-06T00:00:00Z",
+    "steps": [
+      {
+        "id": "spec-builder",
+        "name": "规格构建",
+        "description": "交易习惯转执行约束（硬边界）",
+        "enabled": true,
+        "timeout_sec": 8,
+        "max_retry": 1,
+        "on_fail": "hard_fail"
+      },
+      {
+        "id": "strategy-draft",
+        "name": "策略草案",
+        "description": "生成结构化策略草案",
+        "enabled": true,
+        "timeout_sec": 16,
+        "max_retry": 1,
+        "on_fail": "hold"
+      },
+      {
+        "id": "optimizer",
+        "name": "参数优化",
+        "description": "回测驱动参数优化",
+        "enabled": true,
+        "timeout_sec": 18,
+        "max_retry": 1,
+        "on_fail": "hold"
+      },
+      {
+        "id": "risk-reviewer",
+        "name": "风险复核",
+        "description": "过拟合与极端行情风险复核",
+        "enabled": true,
+        "timeout_sec": 10,
+        "max_retry": 0,
+        "on_fail": "hard_fail"
+      },
+      {
+        "id": "release-packager",
+        "name": "发布打包",
+        "description": "打包上线策略版本与监控建议",
+        "enabled": true,
+        "timeout_sec": 10,
+        "max_retry": 0,
+        "on_fail": "hold"
+      }
+    ],
+    "constraints": {
+      "max_leverage_cap": 150,
+      "max_drawdown_cap_pct": 0.2,
+      "max_risk_per_trade_cap_pct": 0.03,
+      "min_profit_loss_floor": 2.6,
+      "block_trade_on_skill_fail": true
+    },
+    "prompts": {
+      "strategy_generator_system_prompt": "你是量化策略架构师，只能返回严格 JSON。",
+      "strategy_generator_task_prompt": "请基于用户选项与当前市场状态，生成可落地的交易偏好提示词与策略模板。",
+      "strategy_generator_requirements": [
+        "仅输出严格 JSON",
+        "preference_prompt 必须包含入场区、止损、止盈、盈亏比与 HOLD 条件",
+        "preference_prompt 优先使用相对规则（EMA/ATR/百分比区间），避免写死绝对价格；若给出绝对价位，需附带动态重算条件",
+        "generator_prompt 必须包含 ${symbol} 与 ${habit}",
+        "不要输出固定下单金额或固定杠杆",
+        "实际下单张数/保证金/杠杆必须遵循实盘执行设置"
+      ],
+      "decision_system_prompt": "你是专业量化交易决策引擎。你只能输出严格JSON，不要输出任何额外文本。你负责方向与SL/TP建议，仓位和风控由系统执行。",
+      "decision_policy_prompt": "优先保护本金；信号冲突或不确定时返回HOLD；避免低置信度反转。"
+    }
+  },
+  "habit_profiles": [
+    {
+      "habit": "10m",
+      "label": "超短线",
+      "timeframe": "15m",
+      "max_leverage": 30,
+      "max_drawdown_pct": 0.04,
+      "max_risk_per_trade_pct": 0.008,
+      "allow_add_position": false,
+      "hold_bars_min": 1,
+      "hold_bars_max": 16,
+      "description": "高频、轻仓、快进快出，优先执行明确触发条件。",
+      "execution_hint": "触发条件不完整时保持 HOLD，减少噪音交易。",
+      "preferred_data_span": 120
+    },
+    {
+      "habit": "1h",
+      "label": "日内短线",
+      "timeframe": "1h",
+      "max_leverage": 20,
+      "max_drawdown_pct": 0.06,
+      "max_risk_per_trade_pct": 0.01,
+      "allow_add_position": true,
+      "hold_bars_min": 2,
+      "hold_bars_max": 24,
+      "description": "兼顾趋势与结构，适合主流交易对日内执行。",
+      "execution_hint": "信号冲突时优先观望，等待关键位确认。",
+      "preferred_data_span": 160
+    },
+    {
+      "habit": "4h",
+      "label": "波段",
+      "timeframe": "4h",
+      "max_leverage": 10,
+      "max_drawdown_pct": 0.08,
+      "max_risk_per_trade_pct": 0.012,
+      "allow_add_position": true,
+      "hold_bars_min": 4,
+      "hold_bars_max": 40,
+      "description": "偏趋势波段，减少频繁交易，重视结构完整性。",
+      "execution_hint": "重点观察突破回踩与均线共振。",
+      "preferred_data_span": 200
+    },
+    {
+      "habit": "1D",
+      "label": "日线趋势",
+      "timeframe": "1d",
+      "max_leverage": 6,
+      "max_drawdown_pct": 0.1,
+      "max_risk_per_trade_pct": 0.015,
+      "allow_add_position": true,
+      "hold_bars_min": 3,
+      "hold_bars_max": 60,
+      "description": "低频趋势策略，强调资金曲线稳定性。",
+      "execution_hint": "优先主趋势方向，逆势只做备选策略。",
+      "preferred_data_span": 220
+    },
+    {
+      "habit": "5D",
+      "label": "周内波段",
+      "timeframe": "1d",
+      "max_leverage": 5,
+      "max_drawdown_pct": 0.1,
+      "max_risk_per_trade_pct": 0.015,
+      "allow_add_position": true,
+      "hold_bars_min": 5,
+      "hold_bars_max": 90,
+      "description": "周级别持仓，限制噪音交易与高杠杆。",
+      "execution_hint": "以趋势延续为主，设置明确失效条件。",
+      "preferred_data_span": 240
+    },
+    {
+      "habit": "30D",
+      "label": "中期配置",
+      "timeframe": "1d",
+      "max_leverage": 3,
+      "max_drawdown_pct": 0.12,
+      "max_risk_per_trade_pct": 0.02,
+      "allow_add_position": false,
+      "hold_bars_min": 12,
+      "hold_bars_max": 180,
+      "description": "中周期配置，强调回撤控制与风险暴露。",
+      "execution_hint": "尽量减少频繁换向，趋势失效再切换。",
+      "preferred_data_span": 280
+    },
+    {
+      "habit": "90D",
+      "label": "长周期配置",
+      "timeframe": "1d",
+      "max_leverage": 2,
+      "max_drawdown_pct": 0.15,
+      "max_risk_per_trade_pct": 0.02,
+      "allow_add_position": false,
+      "hold_bars_min": 20,
+      "hold_bars_max": 260,
+      "description": "长周期低频策略，优先风控与稳定收益。",
+      "execution_hint": "避免噪音驱动交易，严格执行风控停机。",
+      "preferred_data_span": 320
+    }
+  ],
+  "strategy_package_schema": {
+    "notes": [
+      "任一步骤失败必须回退 HOLD",
+      "仓位与杠杆由 risk-plan/risk-engine 最终覆盖",
+      "仅允许结构化 JSON 输出"
+    ],
+    "required": [
+      "version",
+      "generated_at",
+      "workflow",
+      "symbol",
+      "habit",
+      "habit_profile",
+      "spec_builder",
+      "strategy_draft",
+      "optimizer",
+      "risk_reviewer",
+      "release_packager"
+    ],
+    "version": "skill-pipeline/v1",
+    "workflow": [
+      "spec-builder",
+      "strategy-draft",
+      "optimizer",
+      "risk-reviewer",
+      "release-packager"
+    ]
+  }
+}

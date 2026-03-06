@@ -18,9 +18,9 @@ import (
 const (
 	paperRuntimePath       = "data/paper_runtime.json"
 	paperRuntimeVersion    = "paper-runtime/v1"
-	paperDefaultInterval   = 8
-	paperMinInterval       = 2
-	paperMaxInterval       = 300
+	paperDefaultInterval   = 60
+	paperMinInterval       = 5
+	paperMaxInterval       = 3600
 	paperMaxRecordKeep     = 2000
 	paperMaxStrategyHist   = 60
 	paperDefaultSimBalance = 200
@@ -371,6 +371,10 @@ func (s *Service) normalizePaperRuntimeConfig(in paperRuntimeConfig, fallback pa
 
 	if out.IntervalSec <= 0 {
 		out.IntervalSec = fallback.IntervalSec
+	}
+	// 兼容旧版本默认值（8 秒），自动迁移到当前默认值，避免过高频率触发。
+	if out.IntervalSec == 8 && paperDefaultInterval != 8 {
+		out.IntervalSec = paperDefaultInterval
 	}
 	if out.IntervalSec <= 0 {
 		out.IntervalSec = paperDefaultInterval

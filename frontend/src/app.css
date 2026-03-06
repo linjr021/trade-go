@@ -1515,6 +1515,35 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.risk-preset-row {
+  margin-top: 2px;
+  margin-bottom: 0;
+  justify-content: flex-start;
+}
+
+.risk-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.risk-toolbar-left h4 {
+  margin: 0 0 6px;
+}
+
+.risk-toolbar-left .muted {
+  margin: 0 0 8px;
+}
+
+.risk-toolbar-actions {
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
 .save-hint {
   align-self: center;
   font-size: 12px;
@@ -2957,6 +2986,20 @@ button:disabled {
 
 .workflow-constraints-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  row-gap: 14px;
+  column-gap: 16px;
+}
+
+.workflow-constraints-grid > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.workflow-constraints-grid > label > input,
+.workflow-constraints-grid > label > select {
+  margin-top: 0;
 }
 
 .workflow-prompts-grid {
@@ -2966,6 +3009,122 @@ button:disabled {
 
 .workflow-prompts-grid textarea {
   min-height: 120px;
+}
+
+.json-editor {
+  min-height: 360px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.json-code-editor {
+  border: 1px solid #d5dfeb;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f8fbff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.json-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-bottom: 1px solid #dbe5f1;
+  background: #edf3fb;
+}
+
+.json-code-lang {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  min-width: 46px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid #c8d7ea;
+  background: #f7fbff;
+  color: #35506d;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.json-code-body {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+
+.json-code-gutter {
+  max-height: 500px;
+  overflow: hidden;
+  background: #f2f6fb;
+  border-right: 1px solid #dbe5f1;
+  padding: 10px 8px 10px 0;
+}
+
+.json-code-gutter span {
+  display: block;
+  height: 20px;
+  line-height: 20px;
+  text-align: right;
+  color: #91a3b8;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  user-select: none;
+}
+
+.json-code-textarea {
+  min-height: 360px;
+  max-height: 500px;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 20px;
+  background: #fbfdff;
+  color: #203246;
+  box-shadow: none;
+}
+
+.json-code-textarea:focus,
+.json-code-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border: none;
+}
+
+[data-theme='dark'] .json-code-editor {
+  border-color: #35506d;
+  background: #1a2b3d;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+[data-theme='dark'] .json-code-head {
+  background: #22384f;
+  border-bottom-color: #35506d;
+}
+
+[data-theme='dark'] .json-code-lang {
+  border-color: #4c6784;
+  background: #2a435d;
+  color: #deebf8;
+}
+
+[data-theme='dark'] .json-code-gutter {
+  background: #1d3146;
+  border-right-color: #35506d;
+}
+
+[data-theme='dark'] .json-code-gutter span {
+  color: #89a4c1;
+}
+
+[data-theme='dark'] .json-code-textarea {
+  background: #1a2b3d;
+  color: #e1ecf8;
 }
 
 .workflow-log-toolbar {
@@ -4953,6 +5112,14 @@ th {
   .workflow-step-fields,
   .workflow-constraints-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .risk-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .risk-toolbar-actions {
+    justify-content: flex-start;
   }
 
   .workflow-log-content {

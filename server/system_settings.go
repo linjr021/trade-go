@@ -24,6 +24,9 @@ var editableEnvKeys = []string{
 	"MODE",
 	"HTTP_ADDR",
 	"TRADE_DB_PATH",
+	"TIMEFRAME",
+	"DATA_POINTS",
+	"TEST_MODE",
 	"ENABLE_WS_MARKET",
 	"REALTIME_MIN_INTERVAL_SEC",
 	"STRATEGY_LLM_ENABLED",
@@ -191,9 +194,28 @@ func validateSystemSettings(settings map[string]string) (map[string]string, map[
 			errs["ENABLE_WS_MARKET"] = "仅支持 true/false"
 		}
 	}
+	if v := get("TEST_MODE"); v != "" {
+		if _, err := strconv.ParseBool(v); err != nil {
+			errs["TEST_MODE"] = "仅支持 true/false"
+		}
+	}
 	if v := get("STRATEGY_LLM_ENABLED"); v != "" {
 		if _, err := strconv.ParseBool(v); err != nil {
 			errs["STRATEGY_LLM_ENABLED"] = "仅支持 true/false"
+		}
+	}
+	if v := get("TIMEFRAME"); v != "" {
+		tf := strings.ToLower(strings.TrimSpace(v))
+		switch tf {
+		case "1m", "3m", "5m", "10m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo":
+		default:
+			errs["TIMEFRAME"] = "仅支持常见周期（如 1m/5m/15m/1h/4h/1d）"
+		}
+	}
+	if v := get("DATA_POINTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 30 || n > 5000 {
+			errs["DATA_POINTS"] = "应为 30-5000 的整数"
 		}
 	}
 	if v := get("REALTIME_MIN_INTERVAL_SEC"); v != "" {

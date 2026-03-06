@@ -1,4 +1,5 @@
 import { AssetsPageSection } from '@/modules/assets-page-section'
+import { AdvancedSettingsSection } from '@/modules/advanced-settings-section'
 import { AuthAdminPanel } from '@/modules/auth-admin-panel'
 import { BacktestPageSection, BuilderPageSection, SkillWorkflowPageSection } from '@/modules/builder-backtest-sections'
 import { LivePageSection, PaperPageSection } from '@/modules/live-paper-sections'
@@ -8,7 +9,6 @@ import {
   BACKTEST_MAX_MONTH,
   BACKTEST_MIN_MONTH,
   envFieldGroups,
-  HABIT_OPTIONS,
   HISTORY_MAX_MONTH,
   PAIRS,
 } from '@/modules/constants'
@@ -80,6 +80,8 @@ export function DashboardContent({ c, renderOverviewCards }) {
           confirmPaperStrategySelection={c.confirmPaperStrategySelection}
           paperMargin={c.paperMargin}
           setPaperMargin={c.setPaperMargin}
+          paperIntervalSec={c.paperIntervalSec}
+          setPaperIntervalSec={c.setPaperIntervalSec}
           paperSettings={c.paperSettings}
           setPaperSettings={c.setPaperSettings}
           normalizeDecimal={normalizeDecimal}
@@ -121,7 +123,7 @@ export function DashboardContent({ c, renderOverviewCards }) {
           strategyGenMode={c.strategyGenMode}
           habit={c.habit}
           setHabit={c.setHabit}
-          habitOptions={HABIT_OPTIONS}
+          habitOptions={c.habitOptions}
           genPair={c.genPair}
           setGenPair={c.setGenPair}
           pairs={PAIRS}
@@ -168,6 +170,8 @@ export function DashboardContent({ c, renderOverviewCards }) {
           setCoreRiskField={c.setCoreRiskField}
           savingCoreRiskSettings={c.savingCoreRiskSettings}
           coreRiskSaveHint={c.coreRiskSaveHint}
+          applyingRiskPreset={c.applyingRiskPreset}
+          applyRiskPreset={c.applyRiskPreset}
           saveCoreRiskSettings={c.saveCoreRiskSettings}
           resettingRiskBaseline={c.resettingRiskBaseline}
           resetRiskManually={c.resetRiskManually}
@@ -189,6 +193,29 @@ export function DashboardContent({ c, renderOverviewCards }) {
           loadAIWorkflowLogs={c.loadAIWorkflowLogs}
           fmtNum={fmtNum}
           fmtTime={fmtTime}
+        />
+      )}
+
+      {c.menu === 'advanced' && (
+        <AdvancedSettingsSection
+          advancedTab={c.advancedTab}
+          setAdvancedTab={c.setAdvancedTab}
+          systemSettings={c.systemSettings}
+          setSystemSettings={c.setSystemSettings}
+          savingAdvancedEnvSettings={c.savingAdvancedEnvSettings}
+          saveAdvancedEnvSettings={c.saveAdvancedEnvSettings}
+          advancedEnvSaveHint={c.advancedEnvSaveHint}
+          habitProfilesJSON={c.habitProfilesJSON}
+          setHabitProfilesJSON={c.setHabitProfilesJSON}
+          savingHabitProfiles={c.savingHabitProfiles}
+          saveHabitProfilesConfig={c.saveHabitProfilesConfig}
+          resetHabitProfilesToDefault={c.resetHabitProfilesToDefault}
+          strategySchemaJSON={c.strategySchemaJSON}
+          setStrategySchemaJSON={c.setStrategySchemaJSON}
+          savingStrategySchema={c.savingStrategySchema}
+          saveStrategySchemaConfig={c.saveStrategySchemaConfig}
+          resetStrategySchemaToDefault={c.resetStrategySchemaToDefault}
+          loadAdvancedContent={c.loadAdvancedContent}
         />
       )}
 

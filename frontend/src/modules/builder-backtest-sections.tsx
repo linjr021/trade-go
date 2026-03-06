@@ -346,6 +346,8 @@ export function SkillWorkflowPageSection(p) {
     setCoreRiskField,
     savingCoreRiskSettings,
     coreRiskSaveHint,
+    applyingRiskPreset,
+    applyRiskPreset,
     saveCoreRiskSettings,
     resettingRiskBaseline,
     resetRiskManually,
@@ -616,9 +618,28 @@ export function SkillWorkflowPageSection(p) {
         {aiWorkflowTab === 'core_risk' && (
           <div className="builder-pane workflow-pane">
             <section className="sub-window">
-              <div className="card-head">
-                <h4>核心风控参数</h4>
-                <div className="inline-actions">
+              <div className="risk-toolbar">
+                <div className="risk-toolbar-left">
+                  <h4>核心风控参数</h4>
+                  <p className="muted">预设会一键同步：核心风控 + 自动评估/重生成 + 模拟执行间隔。</p>
+                  <div className="actions-row risk-preset-row">
+                    <ActionButton
+                      className="btn-flat btn-flat-cyan"
+                      onClick={() => applyRiskPreset('balanced')}
+                      loading={applyingRiskPreset === 'balanced'}
+                    >
+                      {applyingRiskPreset === 'balanced' ? '应用中...' : '应用均衡模板'}
+                    </ActionButton>
+                    <ActionButton
+                      className="btn-flat btn-flat-purple"
+                      onClick={() => applyRiskPreset('relaxed')}
+                      loading={applyingRiskPreset === 'relaxed'}
+                    >
+                      {applyingRiskPreset === 'relaxed' ? '应用中...' : '应用放宽模板'}
+                    </ActionButton>
+                  </div>
+                </div>
+                <div className="inline-actions risk-toolbar-actions">
                   <ActionButton
                     className="btn-flat btn-flat-rose"
                     onClick={resetRiskManually}

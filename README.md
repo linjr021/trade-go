@@ -5,6 +5,7 @@
 - 实盘交易（风控约束 + 交易执行 + 记录）
 - 模拟交易（本地 Dry-Run，走 AI 决策链，不动用交易所资金）
 - AI 工作流（5 段 skill 流程，可在线调参）
+- 高级参数（交易习惯画像 + 策略包 Schema + 高级环境变量）
 - 策略生成与自动升级
 - 历史回测与回测记录持久化
 - 资产详情面板（总资产、可用资金、趋势、盈亏日历、资产分布）
@@ -14,9 +15,10 @@
 
 - 后端是纯 Go（`main.go` + `app/` + `server/` + `trader/`）。
 - 前端是 React 19 + TypeScript + Vite + Tailwind + shadcn/ui（含一层 Antd 风格兼容原语组件）。
-- Python 策略运行时已不再是主链路依赖，当前交易/决策主链路不依赖 Python。
+- 交易/决策主链路为 Go 后端 + React 前端，策略执行不依赖独立脚本运行时。
 - 策略生成后会写入 `data/generated_strategies.json`，并自动激活到执行策略列表（最多 3 条）。
 - 实时模式下支持 WebSocket 触发交易循环；若未启用或启动失败会回退调度器模式。
+- AI 工作流、交易习惯画像、策略包 Schema 统一由 `skills/trading-strategy-pipeline/references/ai-settings.json` 管理；旧文件会自动同步以兼容历史版本。
 
 ## 2. 技术栈
 
@@ -57,7 +59,7 @@
 
 ### 3.2 AI 工作流（策略生成/升级）
 
-工作流配置在 `data/skill_workflow.json`，默认 5 步：
+工作流配置主文件在 `skills/trading-strategy-pipeline/references/ai-settings.json`（兼容同步 `data/skill_workflow.json`），默认 5 步：
 
 1. `spec-builder`（规格构建）
 2. `strategy-draft`（策略草案）
@@ -88,6 +90,7 @@
 - 策略生成：按交易习惯生成策略，支持命名、重命名、删除
 - 历史回测：参数化回测、结果明细、记录入库、历史可删除
 - 系统设置：系统环境变量、智能体参数、交易所参数、系统状态
+- 高级参数：高级环境变量、交易习惯画像（JSON）、策略包 Schema（JSON）
 - 登录与权限：账号登录、角色权限组（不可见/只读/编辑）、用户权限分配、操作审计
 
 ## 5. 项目结构
@@ -119,6 +122,7 @@ trade-go/
 │   ├── integrations.go           # 智能体/交易所集成管理
 │   ├── strategy_preference.go    # 策略生成
 │   ├── skill_workflow.go         # AI 工作流配置
+│   ├── ai_settings.go            # AI 设置统一持久化（workflow/habit/schema）
 │   ├── backtest.go               # 回测与历史记录
 │   ├── system_settings.go        # 环境变量读写/校验
 │   └── system_runtime.go         # 系统状态/软重启
@@ -129,10 +133,18 @@ trade-go/
 │   ├── trade.db                  # SQLite 数据库
 │   ├── integrations.json         # 前端集成配置
 │   ├── generated_strategies.json # 生成策略库
-│   └── skill_workflow.json       # AI 工作流配置
+│   └── skill_workflow.json       # 兼容同步文件（非主配置）
+├── skills/
+│   └── trading-strategy-pipeline/
+│       └── references/
+│           ├── ai-settings.json          # AI 工作流主配置（source of truth）
+│           ├── habit-profiles.json       # 兼容同步文件
+│           └── strategy-package-schema.json # 兼容同步文件
 └── frontend/                     # React 19 + TS + Vite
     ├── Dockerfile
-    └── docker/nginx.conf
+    ├── docker/nginx.conf
+    ├── playwright.config.ts
+    └── e2e/
 ```
 
 ## 6. Docker Compose 部署（推荐）
@@ -153,7 +165,8 @@ cp .env.example .env
 首次启动会自动创建管理员账号：
 
 - 账号：`admin`
-- 密码：无预设初始密码（首次打开登录页需先完成管理员密码初始化）
+- 密码：默认 `admin`（可通过 `ADMIN_INITIAL_PASSWORD` 覆盖）
+- 首次登录会被强制要求修改账号/密码（安全设置页）
 
 ### 6.3 启动
 
@@ -355,7 +368,7 @@ journalctl -u trade-go-backend -f
 
 > 实际线上建议优先通过前端“系统设置/集成管理”维护，避免手工配置与 UI 状态不一致。
 
-### 8.1 基础运行
+### 9.1 基础运行
 
 - `COMPOSE_PROJECT_NAME`：Compose 项目名（多实例隔离用）
 - `BACKEND_PORT`：宿主机后端端口（默认 `8080`）
@@ -368,13 +381,14 @@ journalctl -u trade-go-backend -f
 - `MODE`：`web` / `cli`
 - `HTTP_ADDR`：后端地址，默认 `:8080`
 - `TRADE_DB_PATH`：SQLite 路径，默认 `data/trade.db`
+- `ADMIN_INITIAL_PASSWORD`：管理员初始密码（默认 `admin`，建议上线前修改）
 
-### 8.1.1 Cloudflare Tunnel（可选）
+### 9.1.1 Cloudflare Tunnel（可选）
 
 - `CF_TUNNEL_ENABLED`：`auto/true/false`（默认 `auto`，`auto`=有 token 则启用）
 - `CF_TUNNEL_TOKEN`：Cloudflare Tunnel 运行 token（启用 `cloudflared` 必填）
 
-### 8.2 AI（智能体）
+### 9.2 AI（智能体）
 
 - `AI_PRODUCT`：产品类型（chatgpt/deepseek/glm/qwen/minimax）
 - `AI_BASE_URL`：模型服务 base URL
@@ -382,13 +396,13 @@ journalctl -u trade-go-backend -f
 - `AI_MODEL`：模型名
 - `AI_EXECUTION_STRATEGIES`：启用策略名（逗号分隔，最多 3 条）
 
-### 8.3 交易所
+### 9.3 交易所
 
 - `ACTIVE_EXCHANGE`：`binance` / `okx`
 - Binance：`BINANCE_API_KEY` / `BINANCE_SECRET`
 - OKX：`OKX_API_KEY` / `OKX_SECRET` / `OKX_PASSWORD`
 
-### 8.4 交易与风控
+### 9.4 交易与风控
 
 - `TRADE_SYMBOL`（默认 `BTCUSDT`）
 - `POSITION_SIZING_MODE`：`contracts` / `margin_pct`
@@ -402,12 +416,12 @@ journalctl -u trade-go-backend -f
 - `MAX_DRAWDOWN_PCT`
 - `LIQUIDATION_BUFFER_PCT`
 
-### 8.5 实时触发
+### 9.5 实时触发
 
 - `ENABLE_WS_MARKET`：`true/false`
 - `REALTIME_MIN_INTERVAL_SEC`：实时最小执行间隔
 
-### 8.6 自动评估与自动策略升级
+### 9.6 自动评估与自动策略升级
 
 - `AUTO_REVIEW_ENABLED`
 - `AUTO_REVIEW_AFTER_ORDER_ONLY`
@@ -424,21 +438,38 @@ journalctl -u trade-go-backend -f
 
 ## 10. API 总览
 
-### 9.1 运行状态与账户
+### 10.1 认证与权限
+
+- `GET /api/auth/bootstrap-status`
+- `POST /api/auth/bootstrap-admin`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `POST /api/auth/change-credentials`
+- `GET/POST /api/auth/roles`
+- `POST /api/auth/roles/update`
+- `POST /api/auth/roles/delete`
+- `GET/POST /api/auth/users`
+- `POST /api/auth/users/role`
+- `POST /api/auth/users/password`
+- `POST /api/auth/users/delete`
+- `GET /api/auth/audit-logs`
+
+### 10.2 运行状态与账户
 
 - `GET /api/status`
 - `GET /api/account`
 - `GET /api/system/runtime`
 - `POST /api/system/restart`（软重启：重载客户端，不是进程重启）
 
-### 9.2 资产详情
+### 10.3 资产详情
 
 - `GET /api/assets/overview`
 - `GET /api/assets/trend?range=7D|30D|3M|6M|1Y`
 - `GET /api/assets/pnl-calendar?month=YYYY-MM`
 - `GET /api/assets/distribution`
 
-### 9.3 交易与信号
+### 10.4 交易与信号
 
 - `GET /api/market/snapshot`
 - `GET /api/signals`
@@ -448,8 +479,9 @@ journalctl -u trade-go-backend -f
 - `POST /api/run`
 - `POST /api/scheduler/start`
 - `POST /api/scheduler/stop`
+- `POST /api/risk/reset`
 
-### 9.4 策略与工作流
+### 10.5 策略与工作流
 
 - `POST /api/strategy-preference/generate`
 - `GET/POST /api/generated-strategies`
@@ -458,18 +490,27 @@ journalctl -u trade-go-backend -f
 - `POST /api/auto-strategy/regen-now`
 - `GET /api/llm-usage/logs`
 
-### 9.5 模拟与回测
+### 10.6 模拟与回测
 
 - `POST /api/paper/simulate-step`
+- `GET /api/paper/state`
+- `GET/POST /api/paper/config`
+- `POST /api/paper/start`
+- `POST /api/paper/stop`
+- `POST /api/paper/reset-pnl`
+- `POST /api/paper/risk/reset`
 - `POST /api/backtest`
 - `GET /api/backtest-history`
 - `GET /api/backtest-history/detail`
 - `POST /api/backtest-history/delete`
 
-### 9.6 集成管理
+### 10.7 集成管理
 
 - `GET /api/integrations`
 - `POST /api/integrations/llm`
+- `POST /api/integrations/llm-product`
+- `POST /api/integrations/llm-product/update`
+- `POST /api/integrations/llm-product/delete`
 - `POST /api/integrations/llm/update`
 - `POST /api/integrations/llm/delete`
 - `POST /api/integrations/llm/test`
@@ -497,7 +538,8 @@ SQLite 默认文件：`data/trade.db`
 
 - `data/integrations.json`
 - `data/generated_strategies.json`
-- `data/skill_workflow.json`
+- `skills/trading-strategy-pipeline/references/ai-settings.json`（AI 工作流 + habit + schema 主配置）
+- `data/skill_workflow.json`（兼容同步文件）
 
 ## 12. 开发与自检
 
@@ -511,8 +553,17 @@ make check
 # 前端单独检查
 cd frontend && npm run check
 
+# 前端类型检查（lint）
+cd frontend && npm run lint
+
 # 前端构建
 cd frontend && npm run build
+
+# 前端 e2e（默认使用 4173，避免占用本地 5173）
+cd frontend && npm run test:e2e
+
+# e2e 端口可覆盖
+cd frontend && PW_FRONTEND_PORT=5175 PW_BACKEND_PORT=18081 npm run test:e2e
 ```
 
 ## 13. 版本管理（推荐流程）

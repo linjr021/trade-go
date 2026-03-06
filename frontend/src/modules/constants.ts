@@ -4,13 +4,12 @@ export const MENU_ITEMS = [
   { key: 'live', label: '实盘交易' },
   { key: 'paper', label: '模拟交易' },
   { key: 'skill_workflow', label: 'AI 工作流' },
+  { key: 'advanced', label: '高级参数' },
   { key: 'builder', label: '策略生成' },
   { key: 'backtest', label: '历史回测' },
   { key: 'auth_admin', label: '权限审计' },
   { key: 'system', label: '系统设置' },
 ]
-
-export const HABIT_OPTIONS = ['10m', '1h', '4h', '1D', '5D', '30D', '90D']
 export const PAIRS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
 export const ASSET_MIN_MONTH = '2020-01'
 export const BACKTEST_MIN_MONTH = '2018-01'
@@ -79,6 +78,14 @@ export const envFieldDefs = envFieldGroups.flatMap((group) => group.fields)
 export const systemSettingDefaults = {
   PRODUCT_NAME: '21xG',
   AI_EXECUTION_STRATEGIES: '',
+  TRADE_DB_PATH: 'data/trade.db',
+  TIMEFRAME: '15m',
+  DATA_POINTS: '96',
+  ENABLE_WS_MARKET: 'true',
+  REALTIME_MIN_INTERVAL_SEC: '5',
+  STRATEGY_LLM_ENABLED: 'true',
+  STRATEGY_LLM_TIMEOUT_SEC: '60',
+  TEST_MODE: 'false',
   AUTO_REVIEW_ENABLED: 'true',
   AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',
   AUTO_REVIEW_INTERVAL_SEC: '1800',

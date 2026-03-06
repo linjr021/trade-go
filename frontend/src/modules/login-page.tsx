@@ -114,7 +114,6 @@ export function LoginPage({
           {loading ? '登录中...' : '登录'}
         </ActionButton>
       </div>
-      <p className="login-tip">初始账号：admin，初始密码：admin。首次登录后会强制要求修改账号与密码。</p>
     </AuthSplitLayout>
   )
 }

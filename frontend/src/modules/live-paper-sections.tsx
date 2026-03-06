@@ -603,6 +603,8 @@ export function PaperPageSection(p) {
     confirmPaperStrategySelection,
     paperMargin,
     setPaperMargin,
+    paperIntervalSec,
+    setPaperIntervalSec,
     paperSettings,
     setPaperSettings,
     normalizeDecimal,
@@ -839,6 +841,23 @@ export function PaperPageSection(p) {
               value={paperSettings.leverage}
               onChange={(e) => setPaperSettings((v) => ({ ...v, leverage: Number(e.target.value) }))}
               onBlur={() => setPaperSettings((v) => ({ ...v, leverage: normalizeLeverage(v.leverage) }))}
+            />
+          </label>
+          <label>
+            <span>执行间隔秒(5-3600)</span>
+            <input
+              type="number"
+              min="5"
+              max="3600"
+              step="1"
+              value={paperIntervalSec}
+              onChange={(e) => setPaperIntervalSec(Number(e.target.value))}
+              onBlur={() => setPaperIntervalSec((old) => {
+                const n = Math.round(Number(old) || 60)
+                if (n < 5) return 5
+                if (n > 3600) return 3600
+                return n
+              })}
             />
           </label>
           <label>

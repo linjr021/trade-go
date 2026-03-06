@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
-
-const skillWorkflowPath = "data/skill_workflow.json"
 
 const (
 	legacyStrategyGeneratorSystemPrompt = "You are a quant strategy architect. Return strict JSON only."
@@ -59,7 +56,7 @@ type skillWorkflowConfig struct {
 	Prompts     skillWorkflowPrompts     `json:"prompts"`
 }
 
-func defaultSkillWorkflowConfig() skillWorkflowConfig {
+func defaultSkillWorkflowConfigBuiltin() skillWorkflowConfig {
 	return skillWorkflowConfig{
 		Version:   "skill-workflow/v1",
 		UpdatedAt: time.Now().Format(time.RFC3339),
@@ -134,6 +131,10 @@ func defaultSkillWorkflowConfig() skillWorkflowConfig {
 	}
 }
 
+func defaultSkillWorkflowConfig() skillWorkflowConfig {
+	return loadAISettingsDocument().Workflow
+}
+
 func localizeLegacyWorkflowPrompts(in skillWorkflowPrompts, defaults skillWorkflowPrompts) skillWorkflowPrompts {
 	out := in
 	if strings.TrimSpace(out.StrategyGeneratorSystemPrompt) == legacyStrategyGeneratorSystemPrompt {
@@ -162,7 +163,7 @@ func localizeLegacyWorkflowPrompts(in skillWorkflowPrompts, defaults skillWorkfl
 }
 
 func normalizeSkillWorkflowConfig(in skillWorkflowConfig) skillWorkflowConfig {
-	d := defaultSkillWorkflowConfig()
+	d := defaultSkillWorkflowConfigBuiltin()
 	out := in
 	if strings.TrimSpace(out.Version) == "" {
 		out.Version = d.Version
@@ -300,34 +301,20 @@ func validateSkillWorkflowConfig(cfg skillWorkflowConfig) error {
 }
 
 func readSkillWorkflowConfig() (skillWorkflowConfig, error) {
-	var cfg skillWorkflowConfig
-	raw, err := os.ReadFile(skillWorkflowPath)
-	if err != nil {
-		return cfg, err
-	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return cfg, err
-	}
-	return normalizeSkillWorkflowConfig(cfg), nil
+	doc := loadAISettingsDocument()
+	return normalizeSkillWorkflowConfig(doc.Workflow), nil
 }
 
 func writeSkillWorkflowConfig(cfg skillWorkflowConfig) error {
-	cfg = normalizeSkillWorkflowConfig(cfg)
-	cfg.UpdatedAt = time.Now().Format(time.RFC3339)
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(skillWorkflowPath), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(skillWorkflowPath, raw, 0o644)
+	doc := loadAISettingsDocument()
+	doc.Workflow = normalizeSkillWorkflowConfig(cfg)
+	return writeAISettingsDocument(doc)
 }
 
 func loadSkillWorkflowConfig() skillWorkflowConfig {
 	cfg, err := readSkillWorkflowConfig()
 	if err != nil {
-		return defaultSkillWorkflowConfig()
+		return defaultSkillWorkflowConfigBuiltin()
 	}
 	return normalizeSkillWorkflowConfig(cfg)
 }
@@ -346,7 +333,7 @@ func enabledSkillWorkflowSteps(cfg skillWorkflowConfig) []string {
 		}
 	}
 	if len(names) == 0 {
-		for _, st := range defaultSkillWorkflowConfig().Steps {
+		for _, st := range defaultSkillWorkflowConfigBuiltin().Steps {
 			names = append(names, st.ID)
 		}
 	}
@@ -356,34 +343,61 @@ func enabledSkillWorkflowSteps(cfg skillWorkflowConfig) []string {
 func (s *Service) handleSkillWorkflow(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		cfg := loadSkillWorkflowConfig()
-		writeJSON(w, http.StatusOK, map[string]any{"workflow": cfg})
+		doc := loadAISettingsDocument()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workflow":                normalizeSkillWorkflowConfig(doc.Workflow),
+			"habit_profiles":          normalizeHabitProfiles(doc.HabitProfiles),
+			"strategy_package_schema": doc.StrategyPackageSchema,
+			"ai_settings_path":        aiSettingsPath,
+			"updated_at":              doc.UpdatedAt,
+		})
 	case http.MethodPost:
 		var req struct {
-			Workflow     skillWorkflowConfig `json:"workflow"`
-			ResetDefault bool                `json:"reset_default"`
+			Workflow              skillWorkflowConfig    `json:"workflow"`
+			HabitProfiles         []habitProfile         `json:"habit_profiles"`
+			StrategyPackageSchema map[string]interface{} `json:"strategy_package_schema"`
+			ResetDefault          bool                   `json:"reset_default"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
+		doc := loadAISettingsDocument()
 		cfg := req.Workflow
 		if req.ResetDefault {
-			cfg = defaultSkillWorkflowConfig()
+			doc = defaultAISettingsDocument()
+			cfg = doc.Workflow
+		} else {
+			if len(req.HabitProfiles) > 0 {
+				doc.HabitProfiles = normalizeHabitProfiles(req.HabitProfiles)
+			}
+			if len(req.StrategyPackageSchema) > 0 {
+				doc.StrategyPackageSchema = req.StrategyPackageSchema
+			}
+			// Empty workflow payload means only update other AI settings (e.g. habit_profiles).
+			if len(req.Workflow.Steps) == 0 {
+				cfg = doc.Workflow
+			}
 		}
 		cfg = normalizeSkillWorkflowConfig(cfg)
 		if err := validateSkillWorkflowConfig(cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "skill workflow 校验失败: "+err.Error())
 			return
 		}
-		if err := writeSkillWorkflowConfig(cfg); err != nil {
-			writeError(w, http.StatusInternalServerError, "skill workflow 保存失败: "+err.Error())
+		doc.Workflow = cfg
+		if err := writeAISettingsDocument(doc); err != nil {
+			writeError(w, http.StatusInternalServerError, "AI 设置保存失败: "+err.Error())
 			return
 		}
 		applySkillWorkflowPromptsToEnv(cfg)
+		saved := loadAISettingsDocument()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"message":  "AI 工作流已更新",
-			"workflow": cfg,
+			"message":                 "AI 工作流已更新",
+			"workflow":                normalizeSkillWorkflowConfig(saved.Workflow),
+			"habit_profiles":          normalizeHabitProfiles(saved.HabitProfiles),
+			"strategy_package_schema": saved.StrategyPackageSchema,
+			"ai_settings_path":        aiSettingsPath,
+			"updated_at":              saved.UpdatedAt,
 		})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

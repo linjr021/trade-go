@@ -6,6 +6,7 @@ import {
   History,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   Wallet,
 } from 'lucide-react'
 import { fmtTime } from '@/modules/format'
@@ -56,6 +57,7 @@ import {
   getSystemSettings,
   generateStrategyPreference,
   getSkillWorkflow,
+  saveAISettings,
   saveSkillWorkflow,
   resetSkillWorkflow,
   runAutoStrategyRegenNow,
@@ -99,20 +101,25 @@ const DEFAULT_SKILL_WORKFLOW = {
     block_trade_on_skill_fail: true,
   },
   prompts: {
-    strategy_generator_system_prompt: '你是量化策略架构师，只能返回严格 JSON。',
-    strategy_generator_task_prompt: '请基于用户选项与当前市场状态，生成可落地的交易偏好提示词与策略模板。',
-    strategy_generator_requirements: [
-      '仅输出严格 JSON',
-      'preference_prompt 必须包含入场区、止损、止盈、盈亏比与 HOLD 条件',
-      'preference_prompt 优先使用相对规则（EMA/ATR/百分比区间），避免写死绝对价格；若给出绝对价位，需附带动态重算条件',
-      'generator_prompt 必须包含 ${symbol} 与 ${habit}',
-      '不要输出固定下单金额或固定杠杆',
-      '实际下单张数/保证金/杠杆必须遵循实盘执行设置',
-    ],
-    decision_system_prompt: '你是专业量化交易决策引擎。你只能输出严格JSON，不要输出任何额外文本。你负责方向与SL/TP建议，仓位和风控由系统执行。',
-    decision_policy_prompt: '优先保护本金；信号冲突或不确定时返回HOLD；避免低置信度反转。',
+    strategy_generator_system_prompt: '',
+    strategy_generator_task_prompt: '',
+    strategy_generator_requirements: [],
+    decision_system_prompt: '',
+    decision_policy_prompt: '',
   },
 }
+
+const DEFAULT_HABIT_OPTIONS = ['10m', '1h', '4h', '1D', '5D', '30D', '90D']
+const ADVANCED_ENV_KEYS = [
+  'TRADE_DB_PATH',
+  'TIMEFRAME',
+  'DATA_POINTS',
+  'ENABLE_WS_MARKET',
+  'REALTIME_MIN_INTERVAL_SEC',
+  'STRATEGY_LLM_ENABLED',
+  'STRATEGY_LLM_TIMEOUT_SEC',
+  'TEST_MODE',
+]
 
 const WORKFLOW_STEP_NAME_BY_ID = {
   'spec-builder': '规格构建',
@@ -137,6 +144,68 @@ type CoreRiskSettings = {
   maxDailyLossPct: number
   maxDrawdownPct: number
   liquidationBufferPct: number
+}
+
+type RiskPresetKey = 'balanced' | 'relaxed'
+
+const RISK_PRESET_MAP: Record<RiskPresetKey, {
+  label: string
+  core: CoreRiskSettings
+  auto: Record<string, string>
+  paperIntervalSec: number
+}> = {
+  balanced: {
+    label: '均衡模板',
+    core: {
+      maxRiskPerTradePct: 1.0,
+      maxPositionPct: 25.0,
+      maxConsecutiveLosses: 4,
+      maxDailyLossPct: 8.0,
+      maxDrawdownPct: 18.0,
+      liquidationBufferPct: 1.2,
+    },
+    auto: {
+      AUTO_REVIEW_ENABLED: 'true',
+      AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',
+      AUTO_REVIEW_INTERVAL_SEC: '2700',
+      AUTO_REVIEW_VOLATILITY_PCT: '1.6',
+      AUTO_REVIEW_DRAWDOWN_WARN_PCT: '0.08',
+      AUTO_REVIEW_LOSS_STREAK_WARN: '3',
+      AUTO_REVIEW_RISK_REDUCE_FACTOR: '0.85',
+      AUTO_STRATEGY_REGEN_ENABLED: 'true',
+      AUTO_STRATEGY_REGEN_COOLDOWN_SEC: '43200',
+      AUTO_STRATEGY_REGEN_LOSS_STREAK: '4',
+      AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT: '0.12',
+      AUTO_STRATEGY_REGEN_MIN_RR: '1.8',
+    },
+    paperIntervalSec: 60,
+  },
+  relaxed: {
+    label: '放宽模板',
+    core: {
+      maxRiskPerTradePct: 1.5,
+      maxPositionPct: 35.0,
+      maxConsecutiveLosses: 6,
+      maxDailyLossPct: 12.0,
+      maxDrawdownPct: 25.0,
+      liquidationBufferPct: 0.8,
+    },
+    auto: {
+      AUTO_REVIEW_ENABLED: 'true',
+      AUTO_REVIEW_AFTER_ORDER_ONLY: 'true',
+      AUTO_REVIEW_INTERVAL_SEC: '3600',
+      AUTO_REVIEW_VOLATILITY_PCT: '2.0',
+      AUTO_REVIEW_DRAWDOWN_WARN_PCT: '0.12',
+      AUTO_REVIEW_LOSS_STREAK_WARN: '4',
+      AUTO_REVIEW_RISK_REDUCE_FACTOR: '0.90',
+      AUTO_STRATEGY_REGEN_ENABLED: 'true',
+      AUTO_STRATEGY_REGEN_COOLDOWN_SEC: '86400',
+      AUTO_STRATEGY_REGEN_LOSS_STREAK: '6',
+      AUTO_STRATEGY_REGEN_DRAWDOWN_WARN_PCT: '0.18',
+      AUTO_STRATEGY_REGEN_MIN_RR: '1.6',
+    },
+    paperIntervalSec: 120,
+  },
 }
 
 function isDeprecatedBuiltinStrategyName(name) {
@@ -205,6 +274,50 @@ function strategyListKey(list = []) {
   return parseStrategies(Array.isArray(list) ? list : [])
     .slice(0, 3)
     .join('|')
+}
+
+function normalizeHabitProfilesState(raw: any) {
+  const rows = Array.isArray(raw) ? raw : []
+  const out: Array<Record<string, any>> = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const habit = String(row?.habit || '').trim()
+    if (!habit || seen.has(habit)) continue
+    seen.add(habit)
+    out.push({
+      habit,
+      label: String(row?.label || habit).trim() || habit,
+      timeframe: String(row?.timeframe || '').trim(),
+      max_leverage: Number(row?.max_leverage ?? 0),
+      max_drawdown_pct: Number(row?.max_drawdown_pct ?? 0),
+      max_risk_per_trade_pct: Number(row?.max_risk_per_trade_pct ?? 0),
+      allow_add_position: Boolean(row?.allow_add_position),
+      hold_bars_min: Number(row?.hold_bars_min ?? 0),
+      hold_bars_max: Number(row?.hold_bars_max ?? 0),
+      preferred_data_span: Number(row?.preferred_data_span ?? 0),
+      description: String(row?.description || '').trim(),
+      execution_hint: String(row?.execution_hint || '').trim(),
+    })
+  }
+  if (out.length) return out
+  return DEFAULT_HABIT_OPTIONS.map((habit) => ({
+    habit,
+    label: habit,
+    timeframe: '',
+    max_leverage: 0,
+    max_drawdown_pct: 0,
+    max_risk_per_trade_pct: 0,
+    allow_add_position: false,
+    hold_bars_min: 0,
+    hold_bars_max: 0,
+    preferred_data_span: 0,
+    description: '',
+    execution_hint: '',
+  }))
+}
+
+function prettyJSON(input: any) {
+  return JSON.stringify(input, null, 2)
 }
 
 function sameStrategyList(a = [], b = []) {
@@ -432,6 +545,7 @@ export function useDashboardController() {
     passphrase: '',
   })
   const [paperMargin, setPaperMargin] = useState(200)
+  const [paperIntervalSec, setPaperIntervalSec] = useState(60)
   const [paperRecords, setPaperRecords] = useState<any[]>([])
   const [paperLatestDecisionMap, setPaperLatestDecisionMap] = useState({})
   const [paperPnlBaselineMap, setPaperPnlBaselineMap] = useState({})
@@ -461,11 +575,13 @@ export function useDashboardController() {
   const coreRiskDirtyRef = useRef(false)
   const [savingCoreRiskSettings, setSavingCoreRiskSettings] = useState(false)
   const [coreRiskSaveHint, setCoreRiskSaveHint] = useState('')
+  const [applyingRiskPreset, setApplyingRiskPreset] = useState('')
   const [resettingRiskBaseline, setResettingRiskBaseline] = useState(false)
   const [resettingPaperRiskBaseline, setResettingPaperRiskBaseline] = useState(false)
   const [toast, setToast] = useState({ visible: false, type: 'success', message: '' })
 
   const [builderTab, setBuilderTab] = useState('generate')
+  const [habitProfiles, setHabitProfiles] = useState(() => normalizeHabitProfilesState([]))
   const [habit, setHabit] = useState('1h')
   const [genPair, setGenPair] = useState('BTCUSDT')
   const [genStyle, setGenStyle] = useState('hybrid')
@@ -487,6 +603,15 @@ export function useDashboardController() {
   const [aiWorkflowLogsLoading, setAiWorkflowLogsLoading] = useState(false)
   const [aiWorkflowLogChannel, setAiWorkflowLogChannel] = useState('strategy_generator')
   const [aiWorkflowLogLimit, setAiWorkflowLogLimit] = useState(50)
+  const [advancedTab, setAdvancedTab] = useState('env')
+  const [savingAdvancedEnvSettings, setSavingAdvancedEnvSettings] = useState(false)
+  const [advancedEnvSaveHint, setAdvancedEnvSaveHint] = useState('')
+  const [habitProfilesJSON, setHabitProfilesJSON] = useState('[]')
+  const [habitProfilesDefaultJSON, setHabitProfilesDefaultJSON] = useState('[]')
+  const [savingHabitProfiles, setSavingHabitProfiles] = useState(false)
+  const [strategySchemaJSON, setStrategySchemaJSON] = useState('{}')
+  const [strategySchemaDefaultJSON, setStrategySchemaDefaultJSON] = useState('{}')
+  const [savingStrategySchema, setSavingStrategySchema] = useState(false)
 
   const [btStrategy, setBtStrategy] = useState('')
   const [btPair, setBtPair] = useState('BTCUSDT')
@@ -532,6 +657,10 @@ export function useDashboardController() {
     () => Array.from(new Set([...strategyOptions, ...generatedStrategyNames])),
     [strategyOptions, generatedStrategyNames],
   )
+  const habitOptions = useMemo(
+    () => normalizeHabitProfilesState(habitProfiles).map((x) => String(x?.habit || '').trim()).filter(Boolean),
+    [habitProfiles],
+  )
   const selectedStrategyText = enabledStrategies.length ? enabledStrategies.join(', ') : '请选择策略'
   const paperSelectedStrategyText = paperStrategySelection.length ? paperStrategySelection.join(', ') : '请选择策略'
   const btSelectedStrategyText = btStrategySelection.length ? btStrategySelection.join(', ') : '请选择策略'
@@ -576,6 +705,7 @@ export function useDashboardController() {
       { key: 'live', label: '实盘交易', icon: <CandlestickChart size={16} /> },
       { key: 'paper', label: '模拟交易', icon: <FlaskConical size={16} /> },
       { key: 'skill_workflow', label: 'AI 工作流', icon: <Bot size={16} /> },
+      { key: 'advanced', label: '高级参数', icon: <SlidersHorizontal size={16} />, permModule: 'system' },
       { key: 'builder', label: '策略生成', icon: <Bot size={16} /> },
       { key: 'backtest', label: '历史回测', icon: <History size={16} /> },
       { key: 'auth_admin', label: '权限审计', icon: <ShieldCheck size={16} />, permModule: 'auth_admin' },
@@ -596,6 +726,13 @@ export function useDashboardController() {
     const serverComponents = Array.isArray(systemRuntime?.components) ? systemRuntime.components : []
     return [probe, ...serverComponents]
   }, [backendReachability, systemRuntime])
+
+  useEffect(() => {
+    if (!habitOptions.length) return
+    if (!habitOptions.includes(habit)) {
+      setHabit(habitOptions[0])
+    }
+  }, [habitOptions, habit])
 
   const refreshCore = async (silent = false) => {
     if (!silent) {
@@ -761,9 +898,9 @@ export function useDashboardController() {
           ? (Array.isArray(override.enabled_strategies) ? override.enabled_strategies : [])
           : paperStrategySelection,
       ).slice(0, 3),
-      interval_sec: Math.round(clamp(override?.interval_sec ?? paperRuntime?.interval_sec ?? 8, 2, 300)),
+      interval_sec: Math.round(clamp(override?.interval_sec ?? paperIntervalSec ?? paperRuntime?.interval_sec ?? 60, 5, 3600)),
     }
-  }, [paperPair, paperMargin, paperSettings, paperStrategySelection, paperRuntime?.interval_sec])
+  }, [paperPair, paperMargin, paperSettings, paperStrategySelection, paperIntervalSec, paperRuntime?.interval_sec])
 
   const applyPaperState = useCallback((payload: Record<string, any>, hydrateConfig = false) => {
     const cfg = payload?.config || {}
@@ -796,6 +933,7 @@ export function useDashboardController() {
 
     setPaperPair(symbol || 'BTCUSDT')
     setPaperMargin(normalizeDecimal(Number(cfg?.balance ?? 200), 0, 1_000_000_000))
+    setPaperIntervalSec(Math.round(clamp(Number(cfg?.interval_sec ?? runtime?.interval_sec ?? 60), 5, 3600)))
     setPaperSettings(normalizedSettings)
     setPaperStrategySelection(selection)
     setPaperStrategyDraft(selection)
@@ -812,7 +950,7 @@ export function useDashboardController() {
       low_confidence_margin_pct: normalizedSettings.lowConfidenceMarginPct,
       leverage: normalizedSettings.leverage,
       enabled_strategies: selection,
-      interval_sec: Number(cfg?.interval_sec ?? runtime?.interval_sec ?? 8),
+      interval_sec: Number(cfg?.interval_sec ?? runtime?.interval_sec ?? 60),
     }))
     paperSettingsHydratedRef.current = true
   }, [buildPaperConfigPayload])
@@ -913,10 +1051,10 @@ export function useDashboardController() {
         paperConfigSyncTimerRef.current = null
       }
     }
-  }, [paperPair, paperMargin, paperSettings, paperStrategySelection, syncPaperConfigToBackend])
+  }, [paperPair, paperMargin, paperIntervalSec, paperSettings, paperStrategySelection, syncPaperConfigToBackend])
 
   useEffect(() => {
-    const interval = paperSimRunning ? 5000 : 15000
+    const interval = paperSimRunning ? 12000 : 30000
     const timer = setInterval(() => {
       void loadPaperState(true, false)
     }, interval)
@@ -1086,9 +1224,24 @@ export function useDashboardController() {
       setExchangeBound(Boolean(data.exchange_bound))
     }
     if (workflowRes.status === 'fulfilled') {
-      setSkillWorkflow(normalizeSkillWorkflowState(workflowRes.value?.data?.workflow || DEFAULT_SKILL_WORKFLOW))
+      const workflowPayload = workflowRes.value?.data || {}
+      const normalizedWorkflow = normalizeSkillWorkflowState(workflowPayload?.workflow || DEFAULT_SKILL_WORKFLOW)
+      const rawHabits = Array.isArray(workflowPayload?.habit_profiles) ? workflowPayload.habit_profiles : []
+      const normalizedHabits = normalizeHabitProfilesState(rawHabits)
+      const strategySchema = workflowPayload?.strategy_package_schema && typeof workflowPayload.strategy_package_schema === 'object'
+        ? workflowPayload.strategy_package_schema
+        : {}
+      setSkillWorkflow(normalizedWorkflow)
+      setHabitProfiles(normalizedHabits)
+      const habitsJSON = prettyJSON(rawHabits.length ? rawHabits : normalizedHabits)
+      const schemaJSON = prettyJSON(strategySchema)
+      setHabitProfilesJSON(habitsJSON)
+      setHabitProfilesDefaultJSON(habitsJSON)
+      setStrategySchemaJSON(schemaJSON)
+      setStrategySchemaDefaultJSON(schemaJSON)
     } else {
       setSkillWorkflow((prev) => normalizeSkillWorkflowState(prev))
+      setHabitProfiles((prev) => normalizeHabitProfilesState(prev))
     }
   }
 
@@ -1096,7 +1249,7 @@ export function useDashboardController() {
     refreshCore(false)
     loadSystemAndStrategies()
     void loadPaperState(true, true)
-    const timer = setInterval(() => refreshCore(true), 15000)
+    const timer = setInterval(() => refreshCore(true), 30000)
     return () => clearInterval(timer)
   }, [])
 
@@ -1179,7 +1332,19 @@ export function useDashboardController() {
     try {
       const res = await getSkillWorkflow()
       const incoming = res?.data?.workflow || DEFAULT_SKILL_WORKFLOW
+      const rawHabits = Array.isArray(res?.data?.habit_profiles) ? res.data.habit_profiles : []
+      const normalizedHabits = normalizeHabitProfilesState(rawHabits)
+      const strategySchema = res?.data?.strategy_package_schema && typeof res.data.strategy_package_schema === 'object'
+        ? res.data.strategy_package_schema
+        : {}
       setSkillWorkflow(normalizeSkillWorkflowState(incoming))
+      setHabitProfiles(normalizedHabits)
+      const habitsJSON = prettyJSON(rawHabits.length ? rawHabits : normalizedHabits)
+      const schemaJSON = prettyJSON(strategySchema)
+      setHabitProfilesJSON(habitsJSON)
+      setHabitProfilesDefaultJSON(habitsJSON)
+      setStrategySchemaJSON(schemaJSON)
+      setStrategySchemaDefaultJSON(schemaJSON)
     } catch (e) {
       if (!silent) {
         const reason = e?.response?.data?.error || e?.message || '加载失败'
@@ -1187,8 +1352,28 @@ export function useDashboardController() {
         showToast('error', `加载 AI 工作流失败：${reason}`)
       }
       setSkillWorkflow((prev) => normalizeSkillWorkflowState(prev))
+      setHabitProfiles((prev) => normalizeHabitProfilesState(prev))
     } finally {
       if (!silent) setLoadingSkillWorkflow(false)
+    }
+  }
+
+  const loadAdvancedContent = async () => {
+    setError('')
+    try {
+      await Promise.all([
+        loadSkillWorkflowConfig(false),
+        (async () => {
+          const sysRes = await getSystemSettings()
+          const merged = mergeSystemDefaults(sysRes?.data?.settings || {})
+          setSystemSettings(merged)
+        })(),
+      ])
+      showToast('success', '高级参数已刷新为当前配置')
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '刷新失败'
+      setError(reason)
+      showToast('error', `刷新失败：${reason}`)
     }
   }
 
@@ -1278,7 +1463,18 @@ export function useDashboardController() {
       const payload = normalizeSkillWorkflowState(skillWorkflow)
       const res = await saveSkillWorkflow(payload)
       const next = normalizeSkillWorkflowState(res?.data?.workflow || payload)
+      const normalizedHabits = normalizeHabitProfilesState(res?.data?.habit_profiles)
+      const strategySchema = res?.data?.strategy_package_schema && typeof res.data.strategy_package_schema === 'object'
+        ? res.data.strategy_package_schema
+        : {}
       setSkillWorkflow(next)
+      setHabitProfiles(normalizedHabits)
+      const habitsJSON = prettyJSON(normalizedHabits)
+      const schemaJSON = prettyJSON(strategySchema)
+      setHabitProfilesJSON(habitsJSON)
+      setHabitProfilesDefaultJSON(habitsJSON)
+      setStrategySchemaJSON(schemaJSON)
+      setStrategySchemaDefaultJSON(schemaJSON)
       showToast('success', 'AI 工作流保存成功')
     } catch (e) {
       const reason = e?.response?.data?.error || e?.message || '保存失败'
@@ -1295,7 +1491,18 @@ export function useDashboardController() {
     try {
       const res = await resetSkillWorkflow()
       const next = normalizeSkillWorkflowState(res?.data?.workflow || DEFAULT_SKILL_WORKFLOW)
+      const normalizedHabits = normalizeHabitProfilesState(res?.data?.habit_profiles)
+      const strategySchema = res?.data?.strategy_package_schema && typeof res.data.strategy_package_schema === 'object'
+        ? res.data.strategy_package_schema
+        : {}
       setSkillWorkflow(next)
+      setHabitProfiles(normalizedHabits)
+      const habitsJSON = prettyJSON(normalizedHabits)
+      const schemaJSON = prettyJSON(strategySchema)
+      setHabitProfilesJSON(habitsJSON)
+      setHabitProfilesDefaultJSON(habitsJSON)
+      setStrategySchemaJSON(schemaJSON)
+      setStrategySchemaDefaultJSON(schemaJSON)
       showToast('success', 'AI 工作流已恢复默认')
     } catch (e) {
       const reason = e?.response?.data?.error || e?.message || '恢复默认失败'
@@ -1586,6 +1793,11 @@ export function useDashboardController() {
   }, [menu])
 
   useEffect(() => {
+    if (menu !== 'advanced') return
+    void loadSkillWorkflowConfig(true)
+  }, [menu])
+
+  useEffect(() => {
     if (menu !== 'system' || systemSubTab !== 'status') return undefined
     loadSystemRuntime(false)
     const timer = setInterval(() => loadSystemRuntime(true), 10000)
@@ -1595,7 +1807,7 @@ export function useDashboardController() {
   useEffect(() => {
     if (menu !== 'skill_workflow' || aiWorkflowTab !== 'logs') return undefined
     loadAIWorkflowLogs(false)
-    const timer = setInterval(() => loadAIWorkflowLogs(true), 15000)
+    const timer = setInterval(() => loadAIWorkflowLogs(true), 30000)
     return () => clearInterval(timer)
   }, [menu, aiWorkflowTab, aiWorkflowLogChannel, aiWorkflowLogLimit])
 
@@ -1728,6 +1940,98 @@ export function useDashboardController() {
     }
   }
 
+  const saveAdvancedEnvSettings = async () => {
+    setSavingAdvancedEnvSettings(true)
+    setAdvancedEnvSaveHint('')
+    setError('')
+    try {
+      const payload = {}
+      for (const key of ADVANCED_ENV_KEYS) {
+        payload[key] = String(systemSettings?.[key] || '')
+      }
+      const res = await saveSystemSettings(payload)
+      setSystemSettings(mergeSystemDefaults(res?.data?.settings || { ...systemSettings, ...payload }))
+      setAdvancedEnvSaveHint(`已保存 ${new Date().toLocaleTimeString()}`)
+      const warnMsg = joinFieldMessages(res?.data?.warnings)
+      if (warnMsg) {
+        showToast('warning', `高级参数已保存，但存在告警：${warnMsg}`)
+      } else {
+        showToast('success', '高级参数保存成功')
+      }
+      await refreshCore(true)
+    } catch (e) {
+      const base = e?.response?.data?.error || e?.message || '高级参数保存失败'
+      const detail = joinFieldMessages(e?.response?.data?.field_errors)
+      const reason = detail ? `${base}：${detail}` : base
+      setError(reason)
+      showToast('error', `保存失败：${reason}`)
+    } finally {
+      setSavingAdvancedEnvSettings(false)
+    }
+  }
+
+  const resetHabitProfilesToDefault = () => {
+    setHabitProfilesJSON(String(habitProfilesDefaultJSON || '[]'))
+    showToast('success', '已恢复交易习惯画像默认模板')
+  }
+
+  const saveHabitProfilesConfig = async () => {
+    setSavingHabitProfiles(true)
+    setError('')
+    try {
+      const parsed = JSON.parse(String(habitProfilesJSON || '[]'))
+      if (!Array.isArray(parsed)) {
+        throw new Error('交易习惯画像必须是 JSON 数组')
+      }
+      const res = await saveAISettings({ habit_profiles: parsed })
+      const rawHabits = Array.isArray(res?.data?.habit_profiles) ? res.data.habit_profiles : parsed
+      const nextHabits = normalizeHabitProfilesState(rawHabits)
+      const habitsJSON = prettyJSON(rawHabits)
+      setHabitProfiles(nextHabits)
+      setHabitProfilesJSON(habitsJSON)
+      setHabitProfilesDefaultJSON(habitsJSON)
+      showToast('success', '交易习惯画像保存成功')
+      await loadSkillWorkflowConfig(true)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '交易习惯画像保存失败'
+      setError(reason)
+      showToast('error', `保存失败：${reason}`)
+    } finally {
+      setSavingHabitProfiles(false)
+    }
+  }
+
+  const resetStrategySchemaToDefault = () => {
+    setStrategySchemaJSON(String(strategySchemaDefaultJSON || '{}'))
+    showToast('success', '已恢复策略包 Schema 默认模板')
+  }
+
+  const saveStrategySchemaConfig = async () => {
+    setSavingStrategySchema(true)
+    setError('')
+    try {
+      const parsed = JSON.parse(String(strategySchemaJSON || '{}'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('策略包 Schema 必须是 JSON 对象')
+      }
+      const res = await saveAISettings({ strategy_package_schema: parsed })
+      const schemaFromServer = res?.data?.strategy_package_schema && typeof res.data.strategy_package_schema === 'object'
+        ? res.data.strategy_package_schema
+        : parsed
+      const schemaJSON = prettyJSON(schemaFromServer)
+      setStrategySchemaJSON(schemaJSON)
+      setStrategySchemaDefaultJSON(schemaJSON)
+      showToast('success', '策略包 Schema 保存成功')
+      await loadSkillWorkflowConfig(true)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '策略包 Schema 保存失败'
+      setError(reason)
+      showToast('error', `保存失败：${reason}`)
+    } finally {
+      setSavingStrategySchema(false)
+    }
+  }
+
   const persistEnabledStrategiesEnv = async (nextEnabled = []) => {
     const normalized = Array.from(new Set(
       (Array.isArray(nextEnabled) ? nextEnabled : [])
@@ -1738,6 +2042,68 @@ export function useDashboardController() {
     const res = await saveSystemSettings(payload)
     setSystemSettings((prev) => mergeSystemDefaults(res?.data?.settings || { ...prev, ...payload }))
     return normalized
+  }
+
+  const applyRiskPreset = async (presetKey: RiskPresetKey) => {
+    const preset = RISK_PRESET_MAP[presetKey]
+    if (!preset) return
+    const nextCore = { ...preset.core }
+    const nextAuto = { ...preset.auto }
+    const nextPaperInterval = Math.round(clamp(Number(preset.paperIntervalSec || 60), 5, 3600))
+
+    setCoreRiskSettings(nextCore)
+    coreRiskDirtyRef.current = true
+    setSystemSettings((prev) => mergeSystemDefaults({ ...prev, ...nextAuto }))
+    setPaperIntervalSec(nextPaperInterval)
+
+    setApplyingRiskPreset(presetKey)
+    setSavingCoreRiskSettings(true)
+    setSavingAutoReviewSettings(true)
+    setCoreRiskSaveHint('')
+    setAutoReviewSaveHint('')
+    setError('')
+    try {
+      await updateSettings({
+        max_risk_per_trade_pct: nextCore.maxRiskPerTradePct / 100,
+        max_position_pct: nextCore.maxPositionPct / 100,
+        max_consecutive_losses: nextCore.maxConsecutiveLosses,
+        max_daily_loss_pct: nextCore.maxDailyLossPct / 100,
+        max_drawdown_pct: nextCore.maxDrawdownPct / 100,
+        liquidation_buffer_pct: nextCore.liquidationBufferPct / 100,
+      })
+
+      const autoPayload: Record<string, string> = {}
+      for (const key of AUTO_REVIEW_ENV_KEYS) {
+        autoPayload[key] = String(nextAuto[key] ?? systemSettings?.[key] ?? '')
+      }
+      const autoRes = await saveSystemSettings(autoPayload)
+      setSystemSettings(mergeSystemDefaults(autoRes?.data?.settings || { ...systemSettings, ...autoPayload }))
+
+      try {
+        const paperPayload = buildPaperConfigPayload({ interval_sec: nextPaperInterval })
+        const paperRes = await updatePaperConfig(paperPayload)
+        const cfg = paperRes?.data?.config || paperPayload
+        paperConfigHashRef.current = JSON.stringify(buildPaperConfigPayload(cfg))
+      } catch (paperErr) {
+        const paperReason = resolveRequestError(paperErr, '模拟间隔保存失败')
+        showToast('warning', `预设已应用，但模拟间隔保存失败：${paperReason}`)
+      }
+
+      coreRiskDirtyRef.current = false
+      const savedAt = new Date().toLocaleTimeString()
+      setCoreRiskSaveHint(`已保存 ${savedAt}`)
+      setAutoReviewSaveHint(`已保存 ${savedAt}`)
+      showToast('success', `已应用并保存「${preset.label}」`)
+      await Promise.allSettled([refreshCore(true), loadPaperState(true, false)])
+    } catch (e) {
+      const reason = resolveRequestError(e, `应用${preset.label}失败`)
+      setError(reason)
+      showToast('error', `应用失败：${reason}`)
+    } finally {
+      setApplyingRiskPreset('')
+      setSavingCoreRiskSettings(false)
+      setSavingAutoReviewSettings(false)
+    }
   }
 
   const saveAutoReviewEnv = async () => {
@@ -2787,6 +3153,8 @@ export function useDashboardController() {
     confirmPaperStrategySelection,
     paperMargin,
     setPaperMargin,
+    paperIntervalSec,
+    setPaperIntervalSec,
     paperSettings,
     setPaperSettings,
     startPaperSim,
@@ -2813,6 +3181,7 @@ export function useDashboardController() {
     strategyGenMode,
     habit,
     setHabit,
+    habitOptions,
     genPair,
     setGenPair,
     genStyle,
@@ -2839,10 +3208,28 @@ export function useDashboardController() {
     setAiWorkflowLogChannel,
     aiWorkflowLogLimit,
     setAiWorkflowLogLimit,
+    advancedTab,
+    setAdvancedTab,
+    savingAdvancedEnvSettings,
+    saveAdvancedEnvSettings,
+    advancedEnvSaveHint,
+    habitProfilesJSON,
+    setHabitProfilesJSON,
+    savingHabitProfiles,
+    saveHabitProfilesConfig,
+    resetHabitProfilesToDefault,
+    strategySchemaJSON,
+    setStrategySchemaJSON,
+    savingStrategySchema,
+    saveStrategySchemaConfig,
+    resetStrategySchemaToDefault,
+    loadAdvancedContent,
     coreRiskSettings,
     setCoreRiskField,
     savingCoreRiskSettings,
     coreRiskSaveHint,
+    applyingRiskPreset,
+    applyRiskPreset,
     saveCoreRiskSettings,
     resettingRiskBaseline,
     resetRiskManually,
