@@ -21,6 +21,7 @@ export const LLM_PRODUCT_CATALOG = [
   { product: 'glm', label: 'GLM', base_url: 'https://open.bigmodel.cn/api/paas/v4' },
   { product: 'qwen', label: 'Qwen', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { product: 'minimax', label: 'MiniMax', base_url: 'https://api.minimax.chat/v1' },
+  { product: 'kimi', label: 'Kimi', base_url: 'https://api.moonshot.cn/v1' },
 ]
 
 function getCurrentMonth() {

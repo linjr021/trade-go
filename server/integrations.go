@@ -874,6 +874,8 @@ func normalizeLLMProduct(product string) string {
 		return "qwen"
 	case "minimax", "mini_max":
 		return "minimax"
+	case "kimi", "moonshot":
+		return "kimi"
 	default:
 		return p
 	}
@@ -886,6 +888,7 @@ func llmProductCatalog() []llmProduct {
 		{Name: "GLM", Product: "glm", BaseURL: "https://open.bigmodel.cn/api/paas/v4"},
 		{Name: "Qwen", Product: "qwen", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
 		{Name: "MiniMax", Product: "minimax", BaseURL: "https://api.minimax.chat/v1"},
+		{Name: "Kimi", Product: "kimi", BaseURL: "https://api.moonshot.cn/v1"},
 	}
 }
 
@@ -927,6 +930,8 @@ func inferLLMProductFromBaseURL(baseURL string) string {
 		return "qwen"
 	case strings.Contains(base, "minimax.chat"):
 		return "minimax"
+	case strings.Contains(base, "moonshot.cn"):
+		return "kimi"
 	default:
 		return "chatgpt"
 	}

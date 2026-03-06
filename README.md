@@ -42,7 +42,7 @@
 
 - Binance Futures API（REST + 公共 WS）
 - OKX API（REST + 公共 WS）
-- OpenAI 兼容 Chat Completions / Models 协议（可配置 ChatGPT、DeepSeek、GLM、Qwen、MiniMax）
+- OpenAI 兼容 Chat Completions / Models 协议（可配置 ChatGPT、DeepSeek、GLM、Qwen、MiniMax、Kimi）
 
 ## 3. 核心架构与执行链路
 
@@ -390,7 +390,7 @@ journalctl -u trade-go-backend -f
 
 ### 9.2 AI（智能体）
 
-- `AI_PRODUCT`：产品类型（chatgpt/deepseek/glm/qwen/minimax）
+- `AI_PRODUCT`：产品类型（chatgpt/deepseek/glm/qwen/minimax/kimi）
 - `AI_BASE_URL`：模型服务 base URL
 - `AI_API_KEY`：API Key
 - `AI_MODEL`：模型名
