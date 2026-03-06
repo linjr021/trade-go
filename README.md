@@ -103,6 +103,7 @@ trade-go/
 ├── .dockerignore
 ├── scripts/
 │   ├── deploy_docker.sh          # Docker 一键部署（自动安装 Docker/Compose）
+│   ├── deploy_update.sh          # 服务器更新与重启（git pull + docker compose）
 │   └── install_linux.sh          # Linux 一键安装（systemd + nginx）
 ├── app/
 │   └── app.go                    # MODE=web|cli 启动编排
@@ -312,6 +313,64 @@ FRONTEND_PORT=5273
 CF_TUNNEL_TOKEN=...
 ```
 
+### 6.8 GitLab CI 自动部署（push 即上线）
+
+如果你不想每次都手工执行“上传仓库 -> SSH 登录服务器 -> 拉代码 -> 重启 compose”，可直接启用自动部署。
+
+已内置 CI 文件：
+
+- `.gitlab-ci.yml`
+
+触发方式：
+
+- `push` 到 `main` 自动触发部署
+
+服务器执行脚本：
+
+- `scripts/deploy_update.sh`
+- 行为：`git fetch/pull` + `docker compose up -d [--build]` + `docker compose ps`
+
+#### 6.8.1 需要配置的 GitLab CI/CD Variables
+
+在仓库 `Settings -> CI/CD -> Variables` 中添加：
+
+- `DEPLOY_HOST`：服务器公网 IP 或域名
+- `DEPLOY_PORT`：SSH 端口（默认 `22`）
+- `DEPLOY_USER`：SSH 用户（建议非 root + docker 组权限）
+- `DEPLOY_SSH_PRIVATE_KEY`：私钥（用于 SSH 登录服务器）
+- `DEPLOY_PATH`：项目目录（如 `/opt/trade-go`）
+- `NO_BUILD`：可选，`true/false`（默认 `false`）
+- `WITH_TUNNEL`：可选，`auto/true/false`（默认 `auto`）
+
+建议将密钥变量设置为 `Masked` + `Protected`。
+
+#### 6.8.2 服务器前置条件（仅一次）
+
+```bash
+# 1) 仓库在服务器上是 git 仓库
+cd /opt/trade-go
+git rev-parse --is-inside-work-tree
+
+# 2) 能在服务器本机直接拉取（建议 main）
+git fetch origin main
+git pull --ff-only origin main
+
+# 3) 能正常 compose 启动
+docker compose ps
+```
+
+若第 2 步失败，先修好服务器上的 Git 凭据（Deploy Key 或可访问的 HTTPS Token）。
+
+#### 6.8.3 本地日常操作（简化后）
+
+```bash
+git add .
+git commit -m "feat: ..."
+git push origin main
+```
+
+推送后，GitLab CI 会自动到服务器执行部署。
+
 ## 7. Linux 一键安装脚本（systemd + nginx）
 
 除 Docker Compose 外，项目也支持 Linux 原生部署（适合你后续在服务器上长期运行）。
@@ -515,6 +574,7 @@ journalctl -u trade-go-backend -f
 - `POST /api/integrations/llm/delete`
 - `POST /api/integrations/llm/test`
 - `POST /api/integrations/llm/models`
+- `POST /api/integrations/llm/activate`
 - `POST /api/integrations/exchange`
 - `POST /api/integrations/exchange/activate`
 - `POST /api/integrations/exchange/delete`
