@@ -247,7 +247,7 @@ func generatePreferenceByLLM(
 	directionBias string,
 	tradeCfg config.TradeConfig,
 ) (generatedPreference, bool, string) {
-	apiKey := strings.TrimSpace(config.Config.AIAPIKey)
+	apiKey := normalizeLLMAPIKey(config.Config.AIAPIKey)
 	baseURL := strings.TrimSpace(config.Config.AIBaseURL)
 	model := strings.TrimSpace(config.Config.AIModel)
 	if model == "" {
@@ -359,6 +359,7 @@ func generatePreferenceByLLM(
 			}
 			reason += ": " + bodyText
 		}
+		reason = enrichLLMAuthError(reason)
 		finalReason := reason + "，回退模板生成"
 		return fallbackGeneratedPreference(symbol, habit, tf, style, minRR, allowReversal, lowConfAction, directionBias, finalReason, tradeCfg), true, finalReason
 	}

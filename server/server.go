@@ -104,6 +104,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/integrations/llm/models", s.handleProbeLLMModels)
 	mux.HandleFunc("/api/integrations/llm/update", s.handleUpdateLLMIntegration)
 	mux.HandleFunc("/api/integrations/llm/delete", s.handleDeleteLLMIntegration)
+	mux.HandleFunc("/api/integrations/llm/activate", s.handleActivateLLMIntegration)
 	mux.HandleFunc("/api/integrations/exchange", s.handleAddExchangeIntegration)
 	mux.HandleFunc("/api/integrations/exchange/activate", s.handleActivateExchangeIntegration)
 	mux.HandleFunc("/api/integrations/exchange/delete", s.handleDeleteExchangeIntegration)

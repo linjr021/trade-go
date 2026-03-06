@@ -42,6 +42,7 @@ import {
   getIntegrations,
   addExchangeIntegration,
   addLLMIntegration,
+  activateLLMIntegration,
   probeLLMModels,
   testLLMIntegration,
   updateLLMIntegration,
@@ -510,6 +511,7 @@ export function useDashboardController() {
   const [loadingSystemRuntime, setLoadingSystemRuntime] = useState(false)
   const [restartingBackend, setRestartingBackend] = useState(false)
   const [llmConfigs, setLlmConfigs] = useState<any[]>([])
+  const [activeLLMId, setActiveLLMId] = useState('')
   const [llmProductCatalog, setLlmProductCatalog] = useState<any[]>(() => DEFAULT_LLM_PRODUCT_CATALOG)
   const [exchangeConfigs, setExchangeConfigs] = useState<any[]>([])
   const [activeExchangeId, setActiveExchangeId] = useState('')
@@ -519,6 +521,7 @@ export function useDashboardController() {
   const [addingLLM, setAddingLLM] = useState(false)
   const [editingLLMId, setEditingLLMId] = useState('')
   const [deletingLLMId, setDeletingLLMId] = useState('')
+  const [activatingLLMId, setActivatingLLMId] = useState('')
   const [testingLLMId, setTestingLLMId] = useState('')
   const [llmStatusMap, setLlmStatusMap] = useState<Record<string, any>>({})
   const [addingExchange, setAddingExchange] = useState(false)
@@ -1210,6 +1213,7 @@ export function useDashboardController() {
         }
       })
       setLlmConfigs(llms)
+      setActiveLLMId(String(data.active_llm_id || ''))
       setLlmStatusMap((prev) => {
         const next = {}
         for (const row of llms) {
@@ -2241,6 +2245,7 @@ export function useDashboardController() {
       const llms = Array.isArray(res?.data?.llms) ? res.data.llms : []
       const savedID = String(editingLLMId || res?.data?.added?.id || res?.data?.updated?.id || '').trim()
       setLlmConfigs(llms)
+      setActiveLLMId(String(res?.data?.active_llm_id || savedID || ''))
       setLlmStatusMap((prev) => {
         const next = {}
         for (const row of llms) {
@@ -2298,6 +2303,7 @@ export function useDashboardController() {
     try {
       const res = await deleteLLMIntegration(llmID)
       setLlmConfigs(Array.isArray(res?.data?.llms) ? res.data.llms : [])
+      setActiveLLMId(String(res?.data?.active_llm_id || ''))
       setLlmStatusMap((prev) => {
         const next = { ...prev }
         delete next[llmID]
@@ -2346,6 +2352,33 @@ export function useDashboardController() {
       showToast('error', `测试失败：${reason}`)
     } finally {
       setTestingLLMId('')
+    }
+  }
+
+  const bindLLMAccount = async (id) => {
+    const llmID = String(id || '').trim()
+    if (!llmID) return
+    setActivatingLLMId(llmID)
+    setError('')
+    try {
+      const res = await activateLLMIntegration(llmID)
+      const llms = Array.isArray(res?.data?.llms) ? res.data.llms : []
+      setLlmConfigs(llms)
+      setActiveLLMId(String(res?.data?.active_llm_id || llmID))
+      setLlmStatusMap((prev) => {
+        const next = { ...prev }
+        next[llmID] = { state: 'reachable', message: 'API 可达（激活时已验证）' }
+        return next
+      })
+      await loadSystemAndStrategies()
+      await refreshCore(true)
+      showToast('success', `智能体已激活（ID=${llmID}）`)
+    } catch (e) {
+      const reason = e?.response?.data?.error || e?.message || '激活失败'
+      setError(reason)
+      showToast('error', `激活失败：${reason}`)
+    } finally {
+      setActivatingLLMId('')
     }
   }
 
@@ -3309,8 +3342,11 @@ export function useDashboardController() {
     savingSystemSettings,
     saveSystemEnv,
     llmConfigs,
+    activeLLMId,
+    activatingLLMId,
     testingLLMId,
     llmStatusMap,
+    bindLLMAccount,
     testLLMConfigReachability,
     openEditLLMModal,
     deletingLLMId,

@@ -85,21 +85,6 @@ function classifyOpenDecision(code, signal, approved, reason) {
   const r = String(reason || '').trim()
   const rl = r.toLowerCase()
 
-  const signalFallback = (
-    c === 'paper_strategy_fallback' ||
-    c === 'insufficient_signal' ||
-    c === 'strategy_fallback' ||
-    rl.includes('insufficient_signal') ||
-    rl.includes('信号不足') ||
-    rl.includes('回退')
-  )
-  if (signalFallback || s === 'HOLD') {
-    return {
-      text: '信号回退阻断',
-      guide: '去「策略生成」优化规则，或在「AI 工作流 -> 流程配置/提示词」增强信号触发条件。',
-    }
-  }
-
   const riskBlocked = (
     c === 'paper_risk_blocked' ||
     c === 'risk_blocked' ||
@@ -132,6 +117,28 @@ function classifyOpenDecision(code, signal, approved, reason) {
     return {
       text: '下单前校验阻断',
       guide: '去「实盘/模拟交易」检查交易对、仓位模式、保证金、杠杆和账户可用余额。',
+    }
+  }
+
+  const signalFallback = (
+    c === 'paper_strategy_fallback' ||
+    c === 'insufficient_signal' ||
+    c === 'strategy_fallback' ||
+    rl.includes('insufficient_signal') ||
+    rl.includes('信号回退') ||
+    rl.includes('回退')
+  )
+  if (signalFallback) {
+    return {
+      text: '信号回退阻断',
+      guide: '去「策略生成」优化规则，或在「AI 工作流 -> 流程配置/提示词」增强信号触发条件。',
+    }
+  }
+
+  if (s === 'HOLD' || c === 'hold') {
+    return {
+      text: '策略观望中',
+      guide: '当前信号未达到入场阈值，可在「策略生成」放宽触发条件，或在「AI 工作流 -> 核心风控/自动评估」降低拦截强度。',
     }
   }
 
@@ -667,13 +674,14 @@ export function PaperPageSection(p) {
     const approvedSize = Number(src?.approved_size ?? src?.approvedSize ?? 0)
     const executedCode = String(src?.execution_code ?? src?.executionCode ?? '').trim().toLowerCase()
     const approved = typeof src?.approved === 'boolean' ? src.approved : null
+    const holdReason = signal === 'HOLD' ? '当前未满足策略入场条件，继续观望。' : '当前无有效下单理由。'
     return {
       signal,
       price: Number(src?.price || 0),
       stopLoss: Number(src?.stop_loss ?? src?.stopLoss ?? 0),
       takeProfit: Number(src?.take_profit ?? src?.takeProfit ?? 0),
       confidence,
-      reason: reason || '本地模拟规则（价格动量）',
+      reason: reason || holdReason,
       strategyCombo: combo || paperSelectedStrategyText || '-',
       approved,
       executed: executedCode === ''

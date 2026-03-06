@@ -28,11 +28,20 @@ func NewClient() *Client {
 		model = "chat-model"
 	}
 	return &Client{
-		apiKey:     config.Config.AIAPIKey,
+		apiKey:     normalizeAPIKey(config.Config.AIAPIKey),
 		aiBaseURL:  strings.TrimSpace(config.Config.AIBaseURL),
 		aiModel:    model,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+func normalizeAPIKey(v string) string {
+	s := strings.TrimSpace(v)
+	s = strings.Trim(s, "\"")
+	if strings.HasPrefix(strings.ToLower(s), "bearer ") {
+		s = strings.TrimSpace(s[7:])
+	}
+	return s
 }
 
 type generatedStrategyStore struct {

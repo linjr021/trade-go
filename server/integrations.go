@@ -93,7 +93,7 @@ func (s *Service) handleAddLLMIntegration(w http.ResponseWriter, r *http.Request
 	req.ProductID = strings.TrimSpace(req.ProductID)
 	req.Product = normalizeLLMProduct(req.Product)
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
-	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.APIKey = normalizeLLMAPIKey(req.APIKey)
 	req.Model = strings.TrimSpace(req.Model)
 	if req.Product == "" {
 		req.Product = inferLLMProductFromBaseURL(req.BaseURL)
@@ -143,7 +143,7 @@ func (s *Service) handleUpdateLLMIntegration(w http.ResponseWriter, r *http.Requ
 	req.ProductID = strings.TrimSpace(req.ProductID)
 	req.Product = normalizeLLMProduct(req.Product)
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
-	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.APIKey = normalizeLLMAPIKey(req.APIKey)
 	req.Model = strings.TrimSpace(req.Model)
 	if req.ID == "" {
 		writeError(w, 400, "id 必填")
@@ -256,6 +256,66 @@ func (s *Service) handleDeleteLLMIntegration(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+func (s *Service) handleActivateLLMIntegration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid json body")
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeError(w, 400, "id 必填")
+		return
+	}
+
+	store, err := readIntegrations()
+	if err != nil {
+		writeError(w, 500, "读取配置失败: "+err.Error())
+		return
+	}
+	cfg := findLLMByID(store.LLMs, id)
+	if cfg == nil {
+		writeError(w, 404, "未找到指定智能体参数")
+		return
+	}
+
+	if err := validateLLMIntegration(*cfg); err != nil {
+		setLLMReachability(cfg, "unreachable", err.Error())
+		_ = writeIntegrations(store)
+		writeError(w, 400, "LLM 验证失败: "+err.Error())
+		return
+	}
+	setLLMReachability(cfg, "reachable", "API 可达（激活时已验证）")
+
+	store.ActiveLLMID = cfg.ID
+	if err := writeIntegrations(store); err != nil {
+		writeError(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	if err := bindLLMAccount(s, *cfg); err != nil {
+		writeError(w, 500, "绑定失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"message":       "智能体已激活",
+		"active_llm_id": store.ActiveLLMID,
+		"llms":          store.LLMs,
+		"active_llm": map[string]any{
+			"id":      cfg.ID,
+			"name":    cfg.Name,
+			"product": cfg.Product,
+			"model":   cfg.Model,
+		},
+	})
+}
+
 func (s *Service) handleTestLLMIntegration(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "method not allowed")
@@ -324,7 +384,7 @@ func (s *Service) handleProbeLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Product = normalizeLLMProduct(req.Product)
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
-	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.APIKey = normalizeLLMAPIKey(req.APIKey)
 	if req.Product == "" {
 		req.Product = inferLLMProductFromBaseURL(req.BaseURL)
 	}
@@ -770,12 +830,33 @@ func setLLMReachability(item *llmIntegration, status, message string) {
 	item.CheckedAt = time.Now().Format(time.RFC3339)
 }
 
+func normalizeLLMAPIKey(v string) string {
+	s := strings.TrimSpace(v)
+	s = strings.Trim(s, "\"")
+	if strings.HasPrefix(strings.ToLower(s), "bearer ") {
+		s = strings.TrimSpace(s[7:])
+	}
+	return s
+}
+
+func enrichLLMAuthError(errMsg string) string {
+	msg := strings.TrimSpace(errMsg)
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "invalid authentication") ||
+		strings.Contains(lower, "invalid_authentication") ||
+		strings.Contains(lower, "http 401") {
+		return msg + "；请检查 API Key 是否正确、未过期，且只填写密钥本体（不要包含 \"Bearer \" 前缀）。"
+	}
+	return msg
+}
+
 func validateLLMIntegration(cfg llmIntegration) error {
 	cfg.Product = normalizeLLMProduct(cfg.Product)
 	if err := validateLLMProduct(cfg.Product); err != nil {
 		return err
 	}
 	cfg.BaseURL = llmProductBaseURL(cfg.Product)
+	cfg.APIKey = normalizeLLMAPIKey(cfg.APIKey)
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {
 		return fmt.Errorf("模型不能为空")
@@ -797,15 +878,21 @@ func validateLLMIntegration(cfg llmIntegration) error {
 			}
 		}
 		// 即使 /models 可达，也额外做一次 chat 预检，避免“可达但余额不足/无额度”被误判。
-		return validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model)
+		if err := validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model); err != nil {
+			return fmt.Errorf("%s", enrichLLMAuthError(err.Error()))
+		}
+		return nil
 	}
 
 	// Fallback for providers that may not expose /models in a compatible way.
 	if modelErr != nil && !shouldFallbackChatValidation(modelErr) {
-		return modelErr
+		return fmt.Errorf("%s", enrichLLMAuthError(modelErr.Error()))
 	}
 
-	return validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model)
+	if err := validateLLMChatCompletion(cfg.BaseURL, cfg.APIKey, model); err != nil {
+		return fmt.Errorf("%s", enrichLLMAuthError(err.Error()))
+	}
+	return nil
 }
 
 func validateLLMChatCompletion(baseURL, apiKey, model string) error {
@@ -828,7 +915,7 @@ func validateLLMChatCompletion(baseURL, apiKey, model string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+normalizeLLMAPIKey(apiKey))
 	cli := &http.Client{Timeout: 20 * time.Second}
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -837,7 +924,7 @@ func validateLLMChatCompletion(baseURL, apiKey, model string) error {
 	defer resp.Body.Close()
 	bs, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bs))
+		return fmt.Errorf("%s", enrichLLMAuthError(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bs))))
 	}
 	return nil
 }
@@ -971,7 +1058,7 @@ func fetchLLMModelList(product, baseURL, apiKey string) (models []string, chatEn
 	if err != nil {
 		return nil, chatEndpoint, modelsEndpoint, routeReachable, false, "", err
 	}
-	modelReq.Header.Set("Authorization", "Bearer "+apiKey)
+	modelReq.Header.Set("Authorization", "Bearer "+normalizeLLMAPIKey(apiKey))
 	modelReq.Header.Set("Content-Type", "application/json")
 	modelResp, err := cli.Do(modelReq)
 	if err != nil {
@@ -980,7 +1067,7 @@ func fetchLLMModelList(product, baseURL, apiKey string) (models []string, chatEn
 	modelBody, _ := io.ReadAll(modelResp.Body)
 	_ = modelResp.Body.Close()
 	if modelResp.StatusCode >= 300 {
-		return nil, chatEndpoint, modelsEndpoint, routeReachable, false, "", fmt.Errorf("HTTP %d: %s", modelResp.StatusCode, strings.TrimSpace(string(modelBody)))
+		return nil, chatEndpoint, modelsEndpoint, routeReachable, false, "", fmt.Errorf("%s", enrichLLMAuthError(fmt.Sprintf("HTTP %d: %s", modelResp.StatusCode, strings.TrimSpace(string(modelBody)))))
 	}
 
 	var parsed struct {
@@ -1175,6 +1262,7 @@ func normalizeIntegrationStore(cfg *integrationStore) {
 			cfg.LLMs[i].Product = "chatgpt"
 		}
 		cfg.LLMs[i].BaseURL = llmProductBaseURL(cfg.LLMs[i].Product)
+		cfg.LLMs[i].APIKey = normalizeLLMAPIKey(cfg.LLMs[i].APIKey)
 		cfg.LLMs[i].Status = normalizeLLMReachabilityStatus(cfg.LLMs[i].Status)
 		cfg.LLMs[i].Message = strings.TrimSpace(cfg.LLMs[i].Message)
 		cfg.LLMs[i].CheckedAt = strings.TrimSpace(cfg.LLMs[i].CheckedAt)
@@ -1257,7 +1345,7 @@ func syncEnvWithFrontendStore(cfg integrationStore) {
 		}
 		updates["AI_PRODUCT"] = product
 		updates["AI_BASE_URL"] = baseURL
-		updates["AI_API_KEY"] = strings.TrimSpace(active.APIKey)
+		updates["AI_API_KEY"] = normalizeLLMAPIKey(active.APIKey)
 		updates["AI_MODEL"] = strings.TrimSpace(active.Model)
 	} else {
 		updates["AI_PRODUCT"] = ""
@@ -1424,7 +1512,7 @@ func bindLLMAccount(s *Service, cfg llmIntegration) error {
 	updates := map[string]string{
 		"AI_PRODUCT":  product,
 		"AI_BASE_URL": baseURL,
-		"AI_API_KEY":  strings.TrimSpace(cfg.APIKey),
+		"AI_API_KEY":  normalizeLLMAPIKey(cfg.APIKey),
 		"AI_MODEL":    strings.TrimSpace(cfg.Model),
 	}
 	if err := upsertDotEnv(".env", updates); err != nil {

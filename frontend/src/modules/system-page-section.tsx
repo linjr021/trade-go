@@ -24,6 +24,9 @@ export function SystemPageSection(p) {
     setShowLLMModal,
     llmProductCatalog,
     llmConfigs,
+    activeLLMId,
+    activatingLLMId,
+    bindLLMAccount,
     testingLLMId,
     llmStatusMap,
     testLLMConfigReachability,
@@ -246,6 +249,8 @@ export function SystemPageSection(p) {
                   <tbody>
                     {llmConfigs.map((x) => {
                       const id = String(x.id || '')
+                      const isActive = id === String(activeLLMId || '')
+                      const isActivating = activatingLLMId === id
                       const isTesting = testingLLMId === id
                       const rowStatus = llmStatusMap[id] || { state: 'unknown', message: '未检测' }
                       const statusState = isTesting ? 'testing' : String(rowStatus.state || 'unknown')
@@ -258,7 +263,7 @@ export function SystemPageSection(p) {
                             : '未检测'
                       const statusTitle = String(rowStatus.message || statusText)
                       return (
-                        <tr key={x.id}>
+                        <tr key={x.id} className={isActive ? 'exchange-row-active' : ''}>
                           <td>{x.id}</td>
                           <td>{x.name}</td>
                           <td>{llmProductCatalog.find((item) => item.product === x.product)?.label || llmProductCatalog.find((item) => item.product === x.product)?.name || x.product || '-'}</td>
@@ -270,6 +275,14 @@ export function SystemPageSection(p) {
                           </td>
                           <td>
                             <div className="inline-actions">
+                              <ActionButton
+                                className="btn-flat btn-flat-emerald"
+                                loading={isActivating}
+                                disabled={isActive || isActivating}
+                                onClick={() => bindLLMAccount(x.id)}
+                              >
+                                {isActivating ? '激活中...' : (isActive ? '已激活' : '激活')}
+                              </ActionButton>
                               <ActionButton
                                 className="btn-flat btn-flat-cyan"
                                 loading={isTesting}

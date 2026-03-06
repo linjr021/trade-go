@@ -300,6 +300,9 @@ export function DashboardContent({ c, renderOverviewCards }) {
           setShowLLMModal={c.setShowLLMModal}
           llmProductCatalog={c.llmProductCatalog}
           llmConfigs={c.llmConfigs}
+          activeLLMId={c.activeLLMId}
+          activatingLLMId={c.activatingLLMId}
+          bindLLMAccount={c.bindLLMAccount}
           testingLLMId={c.testingLLMId}
           llmStatusMap={c.llmStatusMap}
           testLLMConfigReachability={c.testLLMConfigReachability}

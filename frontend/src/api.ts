@@ -101,6 +101,8 @@ export const testLLMIntegration = (id: string) => http.post('/integrations/llm/t
 export const probeLLMModels = (payload: Record<string, any>) => http.post('/integrations/llm/models', payload, { timeout: 45000 })
 export const updateLLMIntegration = (payload: Record<string, any>) => http.post('/integrations/llm/update', payload, { timeout: 30000 })
 export const deleteLLMIntegration = (id: string) => http.post('/integrations/llm/delete', { id }, { timeout: 30000 })
+export const activateLLMIntegration = (id: string) =>
+  http.post('/integrations/llm/activate', { id }, { timeout: 30000 })
 export const addExchangeIntegration = (payload: Record<string, any>) =>
   http.post('/integrations/exchange', payload, { timeout: 30000 })
 export const activateExchangeIntegration = (id: string) =>

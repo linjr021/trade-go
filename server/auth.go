@@ -133,7 +133,7 @@ func resolveAuthPermissionPolicy(path, method string) authPermissionPolicy {
 	case "/api/system-settings", "/api/system/restart",
 		"/api/integrations", "/api/integrations/llm", "/api/integrations/llm-product",
 		"/api/integrations/llm-product/update", "/api/integrations/llm-product/delete",
-		"/api/integrations/llm/test", "/api/integrations/llm/models", "/api/integrations/llm/update", "/api/integrations/llm/delete",
+		"/api/integrations/llm/test", "/api/integrations/llm/models", "/api/integrations/llm/update", "/api/integrations/llm/delete", "/api/integrations/llm/activate",
 		"/api/integrations/exchange", "/api/integrations/exchange/activate", "/api/integrations/exchange/delete":
 		return authPermissionPolicy{Module: "system", Need: storage.AccessEdit}
 	case "/api/settings", "/api/run", "/api/scheduler/start", "/api/scheduler/stop":
