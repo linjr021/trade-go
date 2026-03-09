@@ -820,30 +820,48 @@ func (s *Service) handlePaperResetPnL(w http.ResponseWriter, r *http.Request) {
 	if symbol == "" {
 		symbol = strings.ToUpper(strings.TrimSpace(s.paperState.Config.Symbol))
 	}
-	total := 0.0
+	if symbol == "" {
+		symbol = "BTCUSDT"
+	}
+
+	removed := 0
+	kept := make([]paperTradeRecord, 0, len(s.paperState.Records))
 	for _, row := range s.paperState.Records {
 		rowSymbol := strings.ToUpper(strings.TrimSpace(row.Symbol))
 		if rowSymbol == "" || rowSymbol == symbol {
-			total += row.UnrealizedPnL
+			removed++
+			continue
 		}
+		kept = append(kept, row)
 	}
+	s.paperState.Records = kept
+
+	if s.paperState.LatestDecisionMap == nil {
+		s.paperState.LatestDecisionMap = map[string]trader.PaperSimulationResult{}
+	}
+	delete(s.paperState.LatestDecisionMap, symbol)
+
 	if s.paperState.PnLBaselineMap == nil {
 		s.paperState.PnLBaselineMap = map[string]float64{}
 	}
-	s.paperState.PnLBaselineMap[symbol] = total
+	// 重置后以“清空后快照”为基线，保证模拟总盈亏归零。
+	s.paperState.PnLBaselineMap[symbol] = 0
 	_ = s.persistPaperStateLocked()
-	baseline := s.paperState.PnLBaselineMap[symbol]
-	baselineMap := map[string]float64{}
-	for k, v := range s.paperState.PnLBaselineMap {
-		baselineMap[k] = v
-	}
+	st := s.clonePaperStateLocked()
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"symbol":           symbol,
-		"baseline":         baseline,
-		"pnl_baseline_map": baselineMap,
-		"message":          "paper pnl baseline reset",
+		"symbol":              symbol,
+		"baseline":            st.PnLBaselineMap[symbol],
+		"cleared_records":     removed,
+		"message":             "paper simulation state reset",
+		"config":              st.Config,
+		"runtime":             s.paperRuntimeSummary(st),
+		"latest_decision_map": st.LatestDecisionMap,
+		"records":             st.Records,
+		"pnl_baseline_map":    st.PnLBaselineMap,
+		"risk_reset_at_map":   st.RiskResetAtMap,
+		"strategy_history":    st.StrategyHistory,
 	})
 }
 

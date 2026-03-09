@@ -462,7 +462,11 @@ func (s *Store) SaveEquity(balance, upl float64) error {
 	if s == nil {
 		return nil
 	}
-	equity := balance + upl
+	equity := balance
+	if !isFiniteNumber(equity) && isFiniteNumber(balance+upl) {
+		// 兼容旧逻辑：当 balance 无效时，再回退到 balance+upl。
+		equity = balance + upl
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO equity_curve (ts, exchange, balance, unrealized_pnl, equity) VALUES (?, ?, ?, ?, ?)`,
 		time.Now().Format(time.RFC3339), currentExchange(), balance, upl, equity,
@@ -505,7 +509,7 @@ func (s *Store) LoadRiskSnapshot() (RiskSnapshot, error) {
 		return out, err
 	}
 
-	peakSQL := `SELECT COALESCE(MAX(equity),0) FROM equity_curve WHERE exchange=?`
+	peakSQL := `SELECT COALESCE(MAX(CASE WHEN balance IS NOT NULL THEN balance ELSE equity END),0) FROM equity_curve WHERE exchange=?`
 	peakArgs := []any{ex}
 	if resetAt != "" {
 		peakSQL += ` AND ts>=?`
@@ -515,7 +519,7 @@ func (s *Store) LoadRiskSnapshot() (RiskSnapshot, error) {
 	if err != nil {
 		return out, err
 	}
-	curSQL := `SELECT equity FROM equity_curve WHERE exchange=?`
+	curSQL := `SELECT CASE WHEN balance IS NOT NULL THEN balance ELSE equity END FROM equity_curve WHERE exchange=?`
 	curArgs := []any{ex}
 	if resetAt != "" {
 		curSQL += ` AND ts>=?`
@@ -897,10 +901,10 @@ func (s *Store) EquitySummary() (EquitySummary, error) {
 		if err := rows.Scan(&ts, &equity, &balance); err != nil {
 			return out, err
 		}
-		if !equity.Valid {
+		if !equity.Valid && !balance.Valid {
 			continue
 		}
-		v := equity.Float64
+		v := pickEquityValue(balance, equity)
 		if !hasAny {
 			firstEquity = v
 			hasAny = true
@@ -942,7 +946,7 @@ func (s *Store) EquityTrendSince(since time.Time) ([]EquityPoint, error) {
 		return nil, nil
 	}
 	rows, err := s.db.Query(
-		`SELECT ts, equity FROM equity_curve WHERE exchange=? AND ts >= ? ORDER BY id ASC`,
+		`SELECT ts, balance, equity FROM equity_curve WHERE exchange=? AND ts >= ? ORDER BY id ASC`,
 		currentExchange(),
 		since.Format(time.RFC3339),
 	)
@@ -953,14 +957,15 @@ func (s *Store) EquityTrendSince(since time.Time) ([]EquityPoint, error) {
 	var out []EquityPoint
 	for rows.Next() {
 		var ts string
+		var balance sql.NullFloat64
 		var equity sql.NullFloat64
-		if err := rows.Scan(&ts, &equity); err != nil {
+		if err := rows.Scan(&ts, &balance, &equity); err != nil {
 			return nil, err
 		}
-		if !equity.Valid {
+		if !balance.Valid && !equity.Valid {
 			continue
 		}
-		out = append(out, EquityPoint{Ts: ts, Equity: equity.Float64})
+		out = append(out, EquityPoint{Ts: ts, Equity: pickEquityValue(balance, equity)})
 	}
 	return out, nil
 }
@@ -975,7 +980,7 @@ func (s *Store) DailyPnLByMonth(month string) ([]DailyPnL, error) {
 	}
 	end := start.AddDate(0, 1, 0)
 	rows, err := s.db.Query(
-		`SELECT ts, equity FROM equity_curve WHERE exchange=? AND ts >= ? AND ts < ? ORDER BY id ASC`,
+		`SELECT ts, balance, equity FROM equity_curve WHERE exchange=? AND ts >= ? AND ts < ? ORDER BY id ASC`,
 		currentExchange(),
 		start.Format(time.RFC3339), end.Format(time.RFC3339),
 	)
@@ -989,15 +994,16 @@ func (s *Store) DailyPnLByMonth(month string) ([]DailyPnL, error) {
 	order := []string{}
 	for rows.Next() {
 		var ts string
+		var balance sql.NullFloat64
 		var equity sql.NullFloat64
-		if err := rows.Scan(&ts, &equity); err != nil {
+		if err := rows.Scan(&ts, &balance, &equity); err != nil {
 			return nil, err
 		}
-		if !equity.Valid || len(ts) < 10 {
+		if (!balance.Valid && !equity.Valid) || len(ts) < 10 {
 			continue
 		}
 		day := ts[:10]
-		v := equity.Float64
+		v := pickEquityValue(balance, equity)
 		if a, ok := agg[day]; ok {
 			a.last = v
 			agg[day] = a
@@ -1228,6 +1234,20 @@ func currentExchange() string {
 		return "okx"
 	}
 	return "binance"
+}
+
+func isFiniteNumber(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func pickEquityValue(balance, equity sql.NullFloat64) float64 {
+	if balance.Valid && isFiniteNumber(balance.Float64) {
+		return balance.Float64
+	}
+	if equity.Valid && isFiniteNumber(equity.Float64) {
+		return equity.Float64
+	}
+	return 0
 }
 
 func (s *Store) String() string {

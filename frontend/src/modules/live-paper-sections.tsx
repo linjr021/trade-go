@@ -657,7 +657,7 @@ export function PaperPageSection(p) {
     ? (paperDurationMinutes >= 60
       ? `${Math.floor(paperDurationMinutes / 60)}h ${paperDurationMinutes % 60}m`
       : `${paperDurationMinutes}m`)
-    : (paperSimRunning ? '运行中(<1m)' : '0m')
+    : '0m'
   const paperAccountSnapshot = {
     balance: Number(paperMargin || 0),
     position: {

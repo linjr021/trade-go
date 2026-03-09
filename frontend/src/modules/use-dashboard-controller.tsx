@@ -1029,16 +1029,24 @@ export function useDashboardController() {
     const pair = String(paperPair || 'BTCUSDT').toUpperCase()
     try {
       const res = await resetPaperPnL({ symbol: pair })
-      setPaperPnlBaselineMap(res?.data?.pnl_baseline_map && typeof res.data.pnl_baseline_map === 'object'
-        ? res.data.pnl_baseline_map
-        : {})
-      showToast('success', `${pair} 当前盈亏已重置`)
+      const payload: Record<string, any> = res?.data && typeof res.data === 'object' ? res.data : {}
+      if (payload && (Array.isArray(payload.records) || payload.runtime || payload.config)) {
+        applyPaperState(payload, false)
+      } else {
+        await loadPaperState(true, false)
+      }
+      const cleared = Math.max(0, Math.round(Number(payload?.cleared_records || 0)))
+      if (cleared > 0) {
+        showToast('success', `${pair} 已重置并清空 ${cleared} 条模拟记录`)
+      } else {
+        showToast('success', `${pair} 当前盈亏已重置`)
+      }
     } catch (e) {
       const reason = resolveRequestError(e, '重置当前盈亏失败')
       setError(reason)
       showToast('error', `重置失败：${reason}`)
     }
-  }, [paperPair])
+  }, [paperPair, applyPaperState, loadPaperState])
 
   useEffect(() => {
     if (!paperSettingsHydratedRef.current) return

@@ -381,10 +381,8 @@ func (b *Bot) Run() {
 		_ = b.savePosition(*newPos)
 	}
 	newBalance, _ := b.exchange.FetchBalance()
+	// FetchBalance 返回口径统一按“账户总权益”，不再叠加未实现盈亏，避免重复计算。
 	equity := newBalance
-	if newPos != nil {
-		equity += newPos.UnrealizedPnL
-	}
 	if b.store != nil && signal.StrategyCombo != "" {
 		if score, err := b.store.UpdateStrategyComboScore(signal.StrategyCombo, equity); err == nil {
 			signal.StrategyScore = score
@@ -730,6 +728,22 @@ func (b *Bot) DailyPnLByMonth(month string) ([]storage.DailyPnL, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+func (b *Bot) SnapshotEquityNow() bool {
+	if b.store == nil {
+		return false
+	}
+	cfg := b.TradeConfig()
+	balance, err := b.exchange.FetchBalance()
+	if err != nil {
+		return false
+	}
+	pos, _ := b.exchange.FetchPosition(cfg.Symbol)
+	if err := b.saveEquity(balance, pos); err != nil {
+		return false
+	}
+	return true
 }
 
 func (b *Bot) SaveBacktestRun(run storage.BacktestRun, records []storage.BacktestRunRecord) (int64, bool) {

@@ -134,13 +134,16 @@ export function Table({ className, columns = [], dataSource = [], pagination = {
   const [page, setPage] = useState(1)
   const [expanded, setExpanded] = useState({})
 
-  useEffect(() => {
-    setPage(1)
-    setExpanded({})
-  }, [dataSource, pageSize])
-
   const totalPages = paged ? Math.max(1, Math.ceil(dataSource.length / pageSize)) : 1
   const safePage = Math.min(page, totalPages)
+
+  useEffect(() => {
+    setPage((prev) => {
+      if (!paged) return 1
+      return prev > totalPages ? totalPages : prev
+    })
+  }, [paged, totalPages])
+
   const rows = useMemo(
     () => (paged ? dataSource.slice((safePage - 1) * pageSize, safePage * pageSize) : dataSource),
     [paged, safePage, pageSize, dataSource],

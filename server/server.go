@@ -362,6 +362,8 @@ func (s *Service) handleAssetTrend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// 请求资产趋势时先采集一次最新权益快照，避免曲线长期滞后于实时资产。
+	_ = s.bot.SnapshotEquityNow()
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
 		rng = "30D"
